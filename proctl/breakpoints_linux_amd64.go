@@ -2,6 +2,7 @@ package proctl
 
 /*
 #include <stddef.h>
+#include <bits/types.h>
 #include <sys/user.h>
 #include <sys/debugreg.h>
 
