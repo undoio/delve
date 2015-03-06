@@ -50,7 +50,6 @@ read_memory(mach_port_name_t task, mach_vm_address_t addr, void *d, mach_msg_typ
 
 kern_return_t
 get_registers(mach_port_name_t task, x86_thread_state64_t *state) {
-	kern_return_t kret;
 	mach_msg_type_number_t stateCount = x86_THREAD_STATE64_COUNT;
 
 	// TODO(dp) - possible memory leak - vm_deallocate state
