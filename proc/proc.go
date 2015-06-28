@@ -130,11 +130,11 @@ func (dbp *Process) Exited() bool {
 // process is currently executing.
 func (dbp *Process) Running() bool {
 	for _, th := range dbp.Threads {
-		if th.running {
-			return true
+		if !th.running {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // Finds the executable and then uses it
@@ -212,11 +212,7 @@ func (dbp *Process) RequestManualStop() error {
 	if err != nil {
 		return err
 	}
-	err = dbp.Halt()
-	if err != nil {
-		return err
-	}
-	return nil
+	return dbp.Halt()
 }
 
 // Sets a breakpoint at addr, and stores it in the process wide
@@ -488,7 +484,7 @@ func (dbp *Process) Halt() (err error) {
 			return err
 		}
 	}
-	return nil
+	return
 }
 
 // Obtains register values from what Delve considers to be the current

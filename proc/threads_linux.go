@@ -2,6 +2,7 @@ package proc
 
 import (
 	"fmt"
+	"time"
 
 	sys "golang.org/x/sys/unix"
 )
@@ -29,8 +30,17 @@ func (t *Thread) Halt() error {
 }
 
 func (t *Thread) resume() (err error) {
+	for {
+		t.dbp.execPtraceFunc(func() { err = PtraceCont(t.Id, 0) })
+		if err != nil {
+			return
+		}
+		if !stopped(t.Id) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	t.running = true
-	t.dbp.execPtraceFunc(func() { err = PtraceCont(t.Id, 0) })
 	return
 }
 

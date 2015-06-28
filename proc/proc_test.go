@@ -111,13 +111,13 @@ func TestHalt(t *testing.T) {
 		go func() {
 			for {
 				if p.Running() {
-					time.Sleep(time.Millisecond)
 					if err := p.RequestManualStop(); err != nil {
 						t.Fatal(err)
 					}
 					stopChan <- nil
 					return
 				}
+				time.Sleep(100 * time.Millisecond)
 			}
 		}()
 		assertNoError(p.Continue(), t, "Continue")

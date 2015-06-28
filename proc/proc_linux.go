@@ -57,7 +57,18 @@ func Launch(cmd []string) (*Process, error) {
 }
 
 func (dbp *Process) requestManualStop() (err error) {
-	return sys.Kill(dbp.Pid, sys.SIGSTOP)
+	if stopped(dbp.Pid) {
+		return
+	}
+	if err = sys.Kill(dbp.Pid, sys.SIGSTOP); err != nil {
+		return
+	}
+	for {
+		if stopped(dbp.Pid) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // Attach to a newly created thread, and store that thread in our list of
@@ -235,6 +246,8 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 		th, ok := dbp.Threads[wpid]
 		if ok {
 			th.Status = status
+		} else {
+			continue
 		}
 		if status.Exited() {
 			if wpid == dbp.Pid {
@@ -273,27 +286,21 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			}
 			continue
 		}
-		if th == nil {
-			// Sometimes we get an unknown thread, ignore it?
-			continue
-		}
-		if status.StopSignal() == sys.SIGTRAP {
+		if status.StopSignal() == sys.SIGSTOP && dbp.halt {
 			th.running = false
-			return dbp.handleBreakpointOnThread(wpid)
+			return nil, ManualStopError{}
 		}
 		if status.StopSignal() == sys.SIGTRAP && dbp.halt {
 			th.running = false
 			return th, nil
 		}
-		if status.StopSignal() == sys.SIGSTOP && dbp.halt {
+		if status.StopSignal() == sys.SIGTRAP {
 			th.running = false
-			return nil, ManualStopError{}
+			return dbp.handleBreakpointOnThread(wpid)
 		}
-		if th != nil {
-			// TODO(dp) alert user about unexpected signals here.
-			if err := th.Continue(); err != nil {
-				return nil, err
-			}
+		// TODO(dp) alert user about unexpected signals here.
+		if err := th.Continue(); err != nil {
+			return nil, err
 		}
 	}
 }
