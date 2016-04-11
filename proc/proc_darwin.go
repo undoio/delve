@@ -75,11 +75,7 @@ func Launch(cmd []string) (*Process, error) {
 	for i := range argvSlice {
 		C.free(unsafe.Pointer(argvSlice[i]))
 	}
-	err = dbp.Halt()
-	if err != nil {
-		return nil, err
-	}
-	C.mach_port_wait(dbp.os.portSet, C.int(0), false)
+	C.mach_port_wait(dbp.os.portSet, C.int(0))
 
 	return initializeDebugProcess(dbp, argv0Go, false)
 }
@@ -114,7 +110,7 @@ func (dbp *Process) Kill() (err error) {
 		}
 	}
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0), true)
+		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
 		if port == dbp.os.notificationPort {
 			break
 		}
@@ -283,7 +279,7 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0), true)
+		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
 
 		switch port {
 		case dbp.os.notificationPort:
@@ -333,7 +329,7 @@ func (dbp *Process) waitForStop() ([]int, error) {
 	ports := make([]int, 0, len(dbp.Threads))
 	count := 0
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(1), true)
+		port := C.mach_port_wait(dbp.os.portSet, C.int(1))
 		if port != 0 {
 			count = 0
 			ports = append(ports, int(port))
@@ -394,6 +390,10 @@ func (dbp *Process) exitGuard(err error) error {
 }
 
 func (dbp *Process) resume() error {
+	ret := int(C.send_mach_reply())
+	if ret < 0 {
+		return errors.New("could not send mach reply")
+	}
 	// all threads stopped over a breakpoint are made to step over it
 	for _, thread := range dbp.Threads {
 		if thread.CurrentBreakpoint != nil {

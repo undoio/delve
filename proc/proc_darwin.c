@@ -21,6 +21,12 @@ __attribute__ ((section ("__TEXT,__info_plist"),used)) =
 "</dict>\n"
 "</plist>\n";
 
+union
+{
+	mach_msg_header_t hdr;
+	char data[256];
+} msg;
+
 kern_return_t
 acquire_mach_task(int tid,
 		mach_port_name_t *task,
@@ -115,16 +121,11 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, int nonblocking, bool reply) {
+mach_port_wait(mach_port_t port_set, int nonblocking) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
 	integer_t *data;
-	union
-	{
-		mach_msg_header_t hdr;
-		char data[256];
-	} msg;
 	mach_msg_option_t opts = MACH_RCV_MSG|MACH_RCV_INTERRUPT;
 	if (nonblocking) {
 		opts |= MACH_RCV_TIMEOUT;
@@ -144,21 +145,18 @@ mach_port_wait(mach_port_t port_set, int nonblocking, bool reply) {
 
 	switch (msg.hdr.msgh_id) {
 		case 2401: // Exception
-			if (thread_suspend(thread) != KERN_SUCCESS) return 0;
-			// Send our reply back so the kernel knows this exception has been handled.
-			kret = mach_send_reply(msg.hdr);
-			if (kret != MACH_MSG_SUCCESS) return 0;
-			if (data[2] == EXC_SOFT_SIGNAL) {
-				if (data[3] != SIGTRAP) {
-					if (thread_resume(thread) != KERN_SUCCESS) return 0;
-					return mach_port_wait(port_set, nonblocking, reply);
-				}
-			}
 			return thread;
 
 		case 72: // Death
 			return msg.hdr.msgh_local_port;
 	}
+	return 0;
+}
+
+int
+send_mach_reply() {
+	kern_return_t kret = mach_send_reply(msg.hdr);
+	if (kret != MACH_MSG_SUCCESS) return -1;
 	return 0;
 }
 
