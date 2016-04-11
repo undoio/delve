@@ -278,6 +278,10 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 }
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
+	ret := int(C.send_mach_reply())
+	if ret < 0 {
+		return errors.New("could not send mach reply")
+	}
 	for {
 		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
 
@@ -390,10 +394,6 @@ func (dbp *Process) exitGuard(err error) error {
 }
 
 func (dbp *Process) resume() error {
-	ret := int(C.send_mach_reply())
-	if ret < 0 {
-		return errors.New("could not send mach reply")
-	}
 	// all threads stopped over a breakpoint are made to step over it
 	for _, thread := range dbp.Threads {
 		if thread.CurrentBreakpoint != nil {
