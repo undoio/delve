@@ -115,7 +115,7 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, int nonblocking) {
+mach_port_wait(mach_port_t port_set, int nonblocking, bool reply) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
@@ -151,7 +151,7 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 			if (data[2] == EXC_SOFT_SIGNAL) {
 				if (data[3] != SIGTRAP) {
 					if (thread_resume(thread) != KERN_SUCCESS) return 0;
-					return mach_port_wait(port_set, nonblocking);
+					return mach_port_wait(port_set, nonblocking, reply);
 				}
 			}
 			return thread;

@@ -50,6 +50,8 @@ fork_exec(char *argv0, char **argv, int size,
 			waitpid(pid, NULL, 0);
 			return -1;
 		}
+		kern_return_t kret = task_suspend((task_t)*task);
+		if (kret != KERN_SUCCESS) return -1;
 		return pid;
 	}
 

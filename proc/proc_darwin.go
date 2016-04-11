@@ -9,12 +9,13 @@ import (
 	"debug/gosym"
 	"errors"
 	"fmt"
-	"golang.org/x/debug/macho"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"unsafe"
+
+	"golang.org/x/debug/macho"
 
 	"github.com/derekparker/delve/dwarf/frame"
 	"github.com/derekparker/delve/dwarf/line"
@@ -74,13 +75,13 @@ func Launch(cmd []string) (*Process, error) {
 	for i := range argvSlice {
 		C.free(unsafe.Pointer(argvSlice[i]))
 	}
-
-	dbp, err = initializeDebugProcess(dbp, argv0Go, false)
+	err = dbp.Halt()
 	if err != nil {
 		return nil, err
 	}
-	err = dbp.Continue()
-	return dbp, err
+	C.mach_port_wait(dbp.os.portSet, C.int(0), false)
+
+	return initializeDebugProcess(dbp, argv0Go, false)
 }
 
 // Attach to an existing process with the given PID.
@@ -113,7 +114,7 @@ func (dbp *Process) Kill() (err error) {
 		}
 	}
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
+		port := C.mach_port_wait(dbp.os.portSet, C.int(0), true)
 		if port == dbp.os.notificationPort {
 			break
 		}
@@ -282,7 +283,7 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
+		port := C.mach_port_wait(dbp.os.portSet, C.int(0), true)
 
 		switch port {
 		case dbp.os.notificationPort:
@@ -332,7 +333,7 @@ func (dbp *Process) waitForStop() ([]int, error) {
 	ports := make([]int, 0, len(dbp.Threads))
 	count := 0
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(1))
+		port := C.mach_port_wait(dbp.os.portSet, C.int(1), true)
 		if port != 0 {
 			count = 0
 			ports = append(ports, int(port))
