@@ -102,25 +102,9 @@ func Attach(pid int) (*Process, error) {
 // Kill kills the process.
 func (dbp *Process) Kill() (err error) {
 	if dbp.exited {
-		return nil
+		return ProcessExitedError{Pid: dbp.Pid}
 	}
-	err = sys.Kill(-dbp.Pid, sys.SIGKILL)
-	if err != nil {
-		return errors.New("could not deliver signal: " + err.Error())
-	}
-	for port := range dbp.Threads {
-		if C.thread_resume(C.thread_act_t(port)) != C.KERN_SUCCESS {
-			return errors.New("could not resume task")
-		}
-	}
-	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
-		if port == dbp.os.notificationPort {
-			break
-		}
-	}
-	dbp.postExit()
-	return
+	return killProcess(dbp)
 }
 
 func (dbp *Process) requestManualStop() (err error) {
@@ -283,7 +267,15 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
+		var exception C.mach_msg_header_t
+		port := C.mach_port_wait(dbp.os.portSet, C.pid_t(dbp.Pid), &exception, C.int(0))
+		// Since we cannot be notified of new threads on OS X
+		// this is as good a time as any to check for them.
+		dbp.updateThreadList()
+		th, threadExists := dbp.Threads[int(port)]
+		if threadExists {
+			th.os.exception = &exception
+		}
 
 		switch port {
 		case dbp.os.notificationPort:
@@ -295,73 +287,28 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			return nil, ProcessExitedError{Pid: dbp.Pid, Status: status.ExitStatus()}
 
 		case C.MACH_RCV_INTERRUPTED:
-			if !dbp.halt {
-				// Call trapWait again, it seems
-				// MACH_RCV_INTERRUPTED is emitted before
-				// process natural death _sometimes_.
-				continue
+			if dbp.halt {
+				dbp.halt = false
+				return nil, nil
 			}
-			return nil, nil
+			continue
 
 		case 0:
 			return nil, fmt.Errorf("error while waiting for task")
 		}
-
-		// Since we cannot be notified of new threads on OS X
-		// this is as good a time as any to check for them.
-		dbp.updateThreadList()
-		th, ok := dbp.Threads[int(port)]
-		if !ok {
-			if dbp.halt {
-				dbp.halt = false
-				return th, nil
-			}
-			if dbp.firstStart || th.singleStepping {
-				dbp.firstStart = false
-				return th, nil
-			}
-			if err := th.Continue(); err != nil {
-				return nil, err
-			}
-			continue
+		if dbp.halt {
+			dbp.halt = false
 		}
 		return th, nil
 	}
 }
 
-func (dbp *Process) waitForStop() ([]int, error) {
-	ports := make([]int, 0, len(dbp.Threads))
-	count := 0
-	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(1))
-		if port != 0 {
-			count = 0
-			ports = append(ports, int(port))
-		} else {
-			n := C.num_running_threads(dbp.os.task)
-			if n == 0 {
-				return ports, nil
-			} else if n < 0 {
-				return nil, fmt.Errorf("error waiting for thread stop %d", n)
-			} else if count > 16 {
-				return nil, fmt.Errorf("could not stop process %d", n)
-			}
-		}
-	}
-}
-
 func (dbp *Process) setCurrentBreakpoints(trapthread *Thread) error {
-	ports, err := dbp.waitForStop()
-	if err != nil {
-		return err
-	}
 	trapthread.SetCurrentBreakpoint()
-	for _, port := range ports {
-		if th, ok := dbp.Threads[port]; ok {
-			err := th.SetCurrentBreakpoint()
-			if err != nil {
-				return err
-			}
+	for _, th := range dbp.Threads {
+		err := th.SetCurrentBreakpoint()
+		if err != nil {
+			return err
 		}
 	}
 	return nil
@@ -377,8 +324,11 @@ func (dbp *Process) wait(pid, options int) (int, *sys.WaitStatus, error) {
 	return wpid, &status, err
 }
 
-func killProcess(pid int) error {
-	return sys.Kill(pid, sys.SIGINT)
+func killProcess(dbp *Process) error {
+	if kret := C.task_terminate(dbp.os.task); kret != C.KERN_SUCCESS {
+		return errors.New("unable to kill process")
+	}
+	return nil
 }
 
 func (dbp *Process) exitGuard(err error) error {

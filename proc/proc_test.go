@@ -147,8 +147,11 @@ func TestHalt(t *testing.T) {
 				}
 			}
 		}()
+		fmt.Println("second continue")
 		assertNoError(p.Continue(), t, "Continue")
+		fmt.Println("after second continue")
 		<-stopChan
+		fmt.Println("after stop")
 		// Loop through threads and make sure they are all
 		// actually stopped, err will not be nil if the process
 		// is still running.
@@ -861,12 +864,14 @@ func TestContinueMulti(t *testing.T) {
 			}
 			assertNoError(err, t, "Continue()")
 
-			if p.CurrentBreakpoint().ID == bp1.ID {
-				mainCount++
-			}
+			if p.CurrentBreakpoint() != nil {
+				if p.CurrentBreakpoint().ID == bp1.ID {
+					mainCount++
+				}
 
-			if p.CurrentBreakpoint().ID == bp2.ID {
-				sayhiCount++
+				if p.CurrentBreakpoint().ID == bp2.ID {
+					sayhiCount++
+				}
 			}
 		}
 

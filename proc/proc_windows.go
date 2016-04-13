@@ -475,7 +475,7 @@ func (dbp *Process) resume() error {
 	return nil
 }
 
-func killProcess(pid int) error {
+func killProcess(dbp *Process) error {
 	fmt.Println("killProcess")
 	return fmt.Errorf("not implemented: killProcess")
 }

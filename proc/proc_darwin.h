@@ -2,6 +2,7 @@
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <sys/ptrace.h>
 #include "mach_exc.h"
 #include "exc.h"
 
@@ -36,10 +37,10 @@ int
 thread_count(task_t task);
 
 mach_port_t
-mach_port_wait(mach_port_t, int);
+mach_port_wait(mach_port_t, pid_t, mach_msg_header_t*, int);
 
 kern_return_t
-mach_send_reply(mach_msg_header_t);
+mach_send_reply(mach_msg_header_t, kern_return_t);
 
 kern_return_t
 raise_exception(mach_port_t, mach_port_t, mach_port_t, exception_type_t);

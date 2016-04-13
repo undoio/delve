@@ -1,5 +1,8 @@
 #include "proc_darwin.h"
 
+#define EXCEPTION 2401
+#define DEATH 0x48
+
 static const unsigned char info_plist[]
 __attribute__ ((section ("__TEXT,__info_plist"),used)) =
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -115,7 +118,7 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, int nonblocking) {
+mach_port_wait(mach_port_t port_set, pid_t pid, mach_msg_header_t *hdr, int nonblocking) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
@@ -141,29 +144,47 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 	thread = desc[0].name;
 	ndr = (NDR_record_t *)(desc + 2);
 	data = (integer_t *)(ndr + 1);
+	mach_msg_id_t exception_type = data[2];
+	int exc_sig = data[3];
 
 	switch (msg.hdr.msgh_id) {
-		case 2401: // Exception
-			if (thread_suspend(thread) != KERN_SUCCESS) return 0;
-			// Send our reply back so the kernel knows this exception has been handled.
-			kret = mach_send_reply(msg.hdr);
-			if (kret != MACH_MSG_SUCCESS) return 0;
-			if (data[2] == EXC_SOFT_SIGNAL) {
-				if (data[3] != SIGTRAP) {
-					if (thread_resume(thread) != KERN_SUCCESS) return 0;
-					return mach_port_wait(port_set, nonblocking);
+		case EXCEPTION:
+			if (exception_type == EXC_SOFT_SIGNAL) {
+				if (exc_sig == SIGTRAP) {
+					*hdr = msg.hdr;
+					return thread;
 				}
 			}
-			return thread;
+			if (exception_type == EXC_BAD_INSTRUCTION || exception_type == EXC_BAD_ACCESS) {
+				*hdr = msg.hdr;
+				return thread;
+			}
 
-		case 72: // Death
+			if (exception_type == 0) {
+				kret = mach_send_reply(msg.hdr, KERN_SUCCESS);
+				if (kret != MACH_MSG_SUCCESS) {
+					return 0;
+				}
+				return thread;
+			}
+			kret = mach_send_reply(msg.hdr, KERN_SUCCESS);
+			if (kret != MACH_MSG_SUCCESS) {
+				return 0;
+			}
+			return mach_port_wait(port_set, pid, hdr, nonblocking);
+
+		case DEATH:
 			return msg.hdr.msgh_local_port;
+	}
+	kret = mach_send_reply(msg.hdr, KERN_SUCCESS);
+	if (kret != MACH_MSG_SUCCESS) {
+		return 0;
 	}
 	return 0;
 }
 
 kern_return_t
-mach_send_reply(mach_msg_header_t hdr) {
+mach_send_reply(mach_msg_header_t hdr, kern_return_t kret) {
 	mig_reply_error_t reply;
 	mach_msg_header_t *rh = &reply.Head;
 	rh->msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(hdr.msgh_bits), 0);
@@ -173,7 +194,7 @@ mach_send_reply(mach_msg_header_t hdr) {
 	rh->msgh_id = hdr.msgh_id + 100;
 
 	reply.NDR = NDR_record;
-	reply.RetCode = KERN_SUCCESS;
+	reply.RetCode = kret;
 
 	return mach_msg(&reply.Head, MACH_SEND_MSG|MACH_SEND_INTERRUPT, rh->msgh_size, 0,
 			MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);

@@ -442,6 +442,9 @@ func (dbp *Process) resume() error {
 	return nil
 }
 
-func killProcess(pid int) error {
-	return sys.Kill(pid, sys.SIGINT)
+func killProcess(dbp *Process) error {
+	if err := sys.Kill(-dbp.Pid, sys.SIGKILL); err != nil {
+		return err
+	}
+	return dbp.Continue()
 }

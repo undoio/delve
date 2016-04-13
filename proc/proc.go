@@ -114,7 +114,7 @@ func (dbp *Process) Detach(kill bool) (err error) {
 			return
 		}
 		if kill {
-			err = killProcess(dbp.Pid)
+			err = killProcess(dbp)
 		}
 	})
 	return

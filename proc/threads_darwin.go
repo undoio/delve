@@ -5,8 +5,10 @@ package proc
 import "C"
 import (
 	"fmt"
-	sys "golang.org/x/sys/unix"
+	"strings"
 	"unsafe"
+
+	sys "golang.org/x/sys/unix"
 )
 
 // WaitStatus is a synonym for the platform-specific WaitStatus
@@ -17,6 +19,10 @@ type WaitStatus sys.WaitStatus
 type OSSpecificDetails struct {
 	threadAct C.thread_act_t
 	registers C.x86_thread_state64_t
+
+	// exception is the exception message header
+	// received when this thread stopped.
+	exception *C.mach_msg_header_t
 }
 
 // ErrContinueThread is the error returned when a thread could not
@@ -34,10 +40,11 @@ func (t *Thread) halt() (err error) {
 }
 
 func (t *Thread) singleStep() error {
-	kret := C.single_step(t.os.threadAct)
+	kret := C.set_single_step_flag(t.os.threadAct)
 	if kret != C.KERN_SUCCESS {
 		return fmt.Errorf("could not single step")
 	}
+	t.resume()
 	for {
 		twthread, err := t.dbp.trapWait(t.dbp.Pid)
 		if err != nil {
@@ -46,6 +53,7 @@ func (t *Thread) singleStep() error {
 		if twthread.ID == t.ID {
 			break
 		}
+		twthread.resume()
 	}
 
 	kret = C.clear_trap_flag(t.os.threadAct)
@@ -56,6 +64,17 @@ func (t *Thread) singleStep() error {
 }
 
 func (t *Thread) resume() error {
+	if (*int)(unsafe.Pointer(t.os.exception)) != nil {
+		kret := C.mach_send_reply(*t.os.exception, C.KERN_SUCCESS)
+		if kret != C.KERN_SUCCESS {
+			errStr := C.GoString(C.mach_error_string(C.mach_error_t(kret)))
+			if strings.Contains(errStr, "invalid msg-header") {
+				return nil
+			}
+			return fmt.Errorf("could not reply to exception(%v): %s", t.os.exception, errStr)
+		}
+		t.os.exception = nil
+	}
 	t.running = true
 	// TODO(dp) set flag for ptrace stops
 	var err error
