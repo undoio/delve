@@ -5,8 +5,9 @@ package proc
 import "C"
 import (
 	"fmt"
-	sys "golang.org/x/sys/unix"
 	"unsafe"
+
+	sys "golang.org/x/sys/unix"
 )
 
 // WaitStatus is a synonym for the platform-specific WaitStatus
@@ -57,12 +58,6 @@ func (t *Thread) singleStep() error {
 
 func (t *Thread) resume() error {
 	t.running = true
-	// TODO(dp) set flag for ptrace stops
-	var err error
-	t.dbp.execPtraceFunc(func() { err = PtraceCont(t.dbp.Pid, 0) })
-	if err == nil {
-		return nil
-	}
 	kret := C.resume_thread(t.os.threadAct)
 	if kret != C.KERN_SUCCESS {
 		return ErrContinueThread

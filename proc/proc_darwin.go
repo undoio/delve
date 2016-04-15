@@ -108,13 +108,13 @@ func (dbp *Process) Kill() (err error) {
 	if err != nil {
 		return errors.New("could not deliver signal: " + err.Error())
 	}
-	for port := range dbp.Threads {
-		if C.thread_resume(C.thread_act_t(port)) != C.KERN_SUCCESS {
-			return errors.New("could not resume task")
+	for _, th := range dbp.Threads {
+		if err := th.resume(); err != nil {
+			return err
 		}
 	}
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
+		port := C.mach_port_wait(dbp.os.portSet, dbp.os.task, C.int(0))
 		if port == dbp.os.notificationPort {
 			break
 		}
@@ -283,7 +283,7 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(0))
+		port := C.mach_port_wait(dbp.os.portSet, dbp.os.task, C.int(0))
 
 		switch port {
 		case dbp.os.notificationPort:
@@ -333,7 +333,7 @@ func (dbp *Process) waitForStop() ([]int, error) {
 	ports := make([]int, 0, len(dbp.Threads))
 	count := 0
 	for {
-		port := C.mach_port_wait(dbp.os.portSet, C.int(1))
+		port := C.mach_port_wait(dbp.os.portSet, dbp.os.task, C.int(1))
 		if port != 0 {
 			count = 0
 			ports = append(ports, int(port))
@@ -402,6 +402,12 @@ func (dbp *Process) resume() error {
 			}
 			thread.CurrentBreakpoint = nil
 		}
+	}
+	// TODO(dp) set flag for ptrace stops
+	var err error
+	dbp.execPtraceFunc(func() { err = PtraceCont(dbp.Pid, 0) })
+	if err == nil {
+		return nil
 	}
 	// everything is resumed
 	for _, thread := range dbp.Threads {

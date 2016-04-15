@@ -115,7 +115,7 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, int nonblocking) {
+mach_port_wait(mach_port_t port_set, task_t task, int nonblocking) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
@@ -144,14 +144,16 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 
 	switch (msg.hdr.msgh_id) {
 		case 2401: // Exception
-			if (thread_suspend(thread) != KERN_SUCCESS) return 0;
+			// TODO(derekparker): we should not just return here without
+			// responding to the message.
+			if (suspend_all_threads(task) != KERN_SUCCESS) return 0;
 			// Send our reply back so the kernel knows this exception has been handled.
 			kret = mach_send_reply(msg.hdr);
 			if (kret != MACH_MSG_SUCCESS) return 0;
 			if (data[2] == EXC_SOFT_SIGNAL) {
 				if (data[3] != SIGTRAP) {
-					if (thread_resume(thread) != KERN_SUCCESS) return 0;
-					return mach_port_wait(port_set, nonblocking);
+					if (resume_all_threads(task) != KERN_SUCCESS) return 0;
+					return mach_port_wait(port_set, task, nonblocking);
 				}
 			}
 			return thread;
@@ -160,6 +162,42 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 			return msg.hdr.msgh_local_port;
 	}
 	return 0;
+}
+
+kern_return_t
+suspend_all_threads(task_t task) {
+	kern_return_t kret;
+	thread_act_array_t list;
+	mach_msg_type_number_t count;
+
+	kret = task_threads(task, &list, &count);
+	if (kret != KERN_SUCCESS) {
+		return kret;
+	}
+	for (int i = 0; i < count; i++) {
+		thread_suspend(list[i]);
+	}
+	return KERN_SUCCESS;
+}
+
+kern_return_t
+resume_all_threads(task_t task) {
+	kern_return_t kret;
+	thread_act_array_t list;
+	mach_msg_type_number_t count;
+
+	kret = task_threads(task, &list, &count);
+	if (kret != KERN_SUCCESS) {
+		return kret;
+	}
+	for (int i = 0; i < count; i++) {
+		kret = thread_resume(list[i]);
+		if (kret != KERN_SUCCESS) {
+			suspend_all_threads(task);
+			return kret;
+		}
+	}
+	return KERN_SUCCESS;
 }
 
 kern_return_t

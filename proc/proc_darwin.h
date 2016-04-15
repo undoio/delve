@@ -36,10 +36,16 @@ int
 thread_count(task_t task);
 
 mach_port_t
-mach_port_wait(mach_port_t, int);
+mach_port_wait(mach_port_t, task_t, int);
 
 kern_return_t
 mach_send_reply(mach_msg_header_t);
+
+kern_return_t
+suspend_all_threads(task_t);
+
+kern_return_t
+resume_all_threads(task_t task);
 
 kern_return_t
 raise_exception(mach_port_t, mach_port_t, mach_port_t, exception_type_t);
