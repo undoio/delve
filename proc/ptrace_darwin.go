@@ -16,7 +16,7 @@ func PtraceAttach(pid int) error {
 
 // PtraceThupdate executes the PT_THUPDATE ptrace call.
 func PtraceThupdate(pid int, t C.thread_act_t, sig int) error {
-	return ptrace(syscall.PT_THUPDATE, pid, C.caddr_t(t), uintptr(sig))
+	return ptrace(syscall.PT_THUPDATE, pid, uintptr(t), uintptr(sig))
 }
 
 // PtraceDetach executes the PT_DETACH ptrace call.
