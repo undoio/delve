@@ -59,7 +59,7 @@ func (t *Thread) singleStep() error {
 
 func (t *Thread) resume() error {
 	t.running = true
-	t.signaled = false
+	t.os.signaled = false
 	var err error
 	t.dbp.execPtraceFunc(func() {
 		err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, 0)
