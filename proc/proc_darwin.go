@@ -403,12 +403,12 @@ func (dbp *Process) resume() error {
 			thread.CurrentBreakpoint = nil
 		}
 	}
-	C.task_resume(dbp.os.task)
 	// everything is resumed
 	for _, thread := range dbp.Threads {
 		if err := thread.resume(); err != nil {
 			return dbp.exitGuard(err)
 		}
 	}
+	C.task_resume(dbp.os.task)
 	return nil
 }
