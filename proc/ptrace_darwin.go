@@ -1,6 +1,10 @@
 package proc
 
-import sys "golang.org/x/sys/unix"
+import (
+	"syscall"
+
+	sys "golang.org/x/sys/unix"
+)
 
 // PtraceAttach executes the sys.PtraceAttach call.
 func PtraceAttach(pid int) error {
@@ -22,7 +26,10 @@ func PtraceSingleStep(tid int) error {
 	return ptrace(sys.PT_STEP, tid, 1, 0)
 }
 
-func ptrace(request, pid int, addr uintptr, data uintptr) (err error) {
+func ptrace(request, pid int, addr uintptr, data uintptr) error {
 	_, _, err = sys.Syscall6(sys.SYS_PTRACE, uintptr(request), uintptr(pid), uintptr(addr), uintptr(data), 0, 0)
-	return
+	if err == syscall.Errno(0) {
+		return nil
+	}
+	return err
 }
