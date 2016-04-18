@@ -15,7 +15,7 @@ func PtraceAttach(pid int) error {
 }
 
 // PtraceThupdate executes the PT_THUPDATE ptrace call.
-func PtraceThupdate(pid int, t C.thread_act, sig int) error {
+func PtraceThupdate(pid int, t C.thread_act_t, sig int) error {
 	return ptrace(syscall.PT_THUPDATE, pid, C.caddr_t(t), uintptr(sig))
 }
 
