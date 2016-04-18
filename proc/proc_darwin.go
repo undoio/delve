@@ -80,9 +80,7 @@ func Launch(cmd []string) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	C.task_suspend(dbp.os.task)
-	dbp.execPtraceFunc(func() { err = PtraceCont(dbp.Pid, 0) })
-	return dbp, err
+	return dbp, nil
 }
 
 // Attach to an existing process with the given PID.
@@ -326,6 +324,7 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			}
 			continue
 		}
+		th.os.signaled = true
 		return th, nil
 	}
 }
@@ -410,6 +409,5 @@ func (dbp *Process) resume() error {
 			return dbp.exitGuard(err)
 		}
 	}
-	C.task_resume(dbp.os.task)
 	return nil
 }

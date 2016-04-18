@@ -18,6 +18,7 @@ type WaitStatus sys.WaitStatus
 type OSSpecificDetails struct {
 	threadAct C.thread_act_t
 	registers C.x86_thread_state64_t
+	signaled  bool
 }
 
 // ErrContinueThread is the error returned when a thread could not
@@ -58,6 +59,14 @@ func (t *Thread) singleStep() error {
 
 func (t *Thread) resume() error {
 	t.running = true
+	t.signaled = false
+	var err error
+	t.dbp.execPtraceFunc(func() {
+		err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, 0)
+	})
+	if err != nil {
+		return err
+	}
 	kret := C.resume_thread(t.os.threadAct)
 	if kret != C.KERN_SUCCESS {
 		return ErrContinueThread
