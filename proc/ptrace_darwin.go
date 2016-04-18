@@ -1,5 +1,8 @@
 package proc
 
+// #include "threads_darwin.h"
+// #include "proc_darwin.h"
+import "C"
 import (
 	"syscall"
 
