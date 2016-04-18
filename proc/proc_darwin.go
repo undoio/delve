@@ -80,7 +80,7 @@ func Launch(cmd []string) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = dbp.Continue()
+	dbp.execPtraceFunc(func() { err = PtraceCont(dbp.Pid, 0) })
 	return dbp, err
 }
 
@@ -409,6 +409,5 @@ func (dbp *Process) resume() error {
 			return dbp.exitGuard(err)
 		}
 	}
-	C.task_resume(dbp.os.task)
 	return nil
 }
