@@ -345,6 +345,8 @@ func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 // process. It will continue until it hits a breakpoint
 // or is otherwise stopped.
 func (dbp *Process) Continue() error {
+	_, f, l, _ := runtime.Caller(1)
+	fmt.Println("continueeeeeeeeeeeeeeeeeee", f, l)
 	if dbp.exited {
 		return &ProcessExitedError{}
 	}
@@ -375,6 +377,10 @@ func (dbp *Process) Continue() error {
 
 		switch {
 		case dbp.CurrentThread.CurrentBreakpoint == nil:
+			if dbp.halt {
+				fmt.Println("haaaaaaaaaaaaaaaaaaaaaaaaaalted")
+				return nil
+			}
 			// runtime.Breakpoint or manual stop
 			if dbp.CurrentThread.onRuntimeBreakpoint() {
 				for i := 0; i < 2; i++ {

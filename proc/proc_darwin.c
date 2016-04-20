@@ -115,7 +115,7 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, int nonblocking) {
+mach_port_wait(mach_port_t port_set, mach_msg_header_t *thdr, int nonblocking) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
@@ -136,6 +136,8 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 	if (kret == MACH_RCV_INTERRUPTED) return kret;
 	if (kret != MACH_MSG_SUCCESS) return 0;
 
+	*thdr = msg.hdr;
+
 	mach_msg_body_t *bod = (mach_msg_body_t*)(&msg.hdr + 1);
 	mach_msg_port_descriptor_t *desc = (mach_msg_port_descriptor_t *)(bod + 1);
 	thread = desc[0].name;
@@ -144,16 +146,6 @@ mach_port_wait(mach_port_t port_set, int nonblocking) {
 
 	switch (msg.hdr.msgh_id) {
 		case 2401: // Exception
-			if (thread_suspend(thread) != KERN_SUCCESS) return 0;
-			// Send our reply back so the kernel knows this exception has been handled.
-			kret = mach_send_reply(msg.hdr);
-			if (kret != MACH_MSG_SUCCESS) return 0;
-			if (data[2] == EXC_SOFT_SIGNAL) {
-				if (data[3] != SIGTRAP) {
-					if (thread_resume(thread) != KERN_SUCCESS) return 0;
-					return mach_port_wait(port_set, nonblocking);
-				}
-			}
 			return thread;
 
 		case 72: // Death

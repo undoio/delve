@@ -37,6 +37,7 @@ func withTestProcess(name string, t testing.TB, fn func(p *Process, fixture prot
 
 	defer func() {
 		p.Halt()
+		panic("about to kill")
 		p.Kill()
 	}()
 
@@ -124,31 +125,18 @@ func setFunctionBreakpoint(p *Process, fname string) (*Breakpoint, error) {
 }
 
 func TestHalt(t *testing.T) {
-	stopChan := make(chan interface{})
 	withTestProcess("loopprog", t, func(p *Process, fixture protest.Fixture) {
-		_, err := setFunctionBreakpoint(p, "main.loop")
-		assertNoError(err, t, "SetBreakpoint")
-		assertNoError(p.Continue(), t, "Continue")
-		for _, th := range p.Threads {
-			if th.running != false {
-				t.Fatal("expected running = false for thread", th.ID)
-			}
-			_, err := th.Registers()
-			assertNoError(err, t, "Registers")
-		}
 		go func() {
 			for {
 				if p.Running() {
 					if err := p.RequestManualStop(); err != nil {
 						t.Fatal(err)
 					}
-					stopChan <- nil
-					return
+					break
 				}
 			}
 		}()
 		assertNoError(p.Continue(), t, "Continue")
-		<-stopChan
 		// Loop through threads and make sure they are all
 		// actually stopped, err will not be nil if the process
 		// is still running.
@@ -389,7 +377,9 @@ func TestNextConcurrent(t *testing.T) {
 			if ln != tc.begin {
 				t.Fatalf("Program not stopped at correct spot expected %d was %s:%d", tc.begin, filepath.Base(f), ln)
 			}
+			fmt.Println(" ----begin next----")
 			assertNoError(p.Next(), t, "Next() returned an error")
+			fmt.Println(" ----fin next----")
 			f, ln = currentLineNumber(p, t)
 			if ln != tc.end {
 				t.Fatalf("Program did not continue to correct next location expected %d was %s:%d", tc.end, filepath.Base(f), ln)
@@ -402,6 +392,7 @@ func TestNextConcurrent(t *testing.T) {
 			}
 		}
 	})
+	fmt.Println(" _________________---------------")
 }
 
 func TestNextConcurrentVariant2(t *testing.T) {

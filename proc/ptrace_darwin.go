@@ -1,6 +1,12 @@
 package proc
 
-import sys "golang.org/x/sys/unix"
+// #include "proc_darwin.h"
+import "C"
+import (
+	"syscall"
+
+	sys "golang.org/x/sys/unix"
+)
 
 // PtraceAttach executes the sys.PtraceAttach call.
 func PtraceAttach(pid int) error {
@@ -15,6 +21,11 @@ func PtraceDetach(tid, sig int) error {
 // PtraceCont executes the PTRACE_CONT ptrace call.
 func PtraceCont(tid, sig int) error {
 	return ptrace(sys.PTRACE_CONT, tid, 1, 0)
+}
+
+// PtraceThupdate executes the PT_THUPDATE ptrace call.
+func PtraceThupdate(pid int, tid C.thread_act_t, sig int) error {
+	return ptrace(syscall.PT_THUPDATE, pid, uintptr(tid), 0)
 }
 
 // PtraceSingleStep returns PT_STEP ptrace call.

@@ -5,8 +5,10 @@ package proc
 import "C"
 import (
 	"fmt"
-	sys "golang.org/x/sys/unix"
+	"runtime"
 	"unsafe"
+
+	sys "golang.org/x/sys/unix"
 )
 
 // WaitStatus is a synonym for the platform-specific WaitStatus
@@ -17,6 +19,7 @@ type WaitStatus sys.WaitStatus
 type OSSpecificDetails struct {
 	threadAct C.thread_act_t
 	registers C.x86_thread_state64_t
+	hdr       C.mach_msg_header_t
 }
 
 // ErrContinueThread is the error returned when a thread could not
@@ -34,18 +37,19 @@ func (t *Thread) halt() (err error) {
 }
 
 func (t *Thread) singleStep() error {
-	kret := C.single_step(t.os.threadAct)
+	kret := C.set_single_step_flag(t.os.threadAct)
 	if kret != C.KERN_SUCCESS {
 		return fmt.Errorf("could not single step")
 	}
-	for {
-		twthread, err := t.dbp.trapWait(t.dbp.Pid)
-		if err != nil {
-			return err
-		}
-		if twthread.ID == t.ID {
-			break
-		}
+	if err := t.resume(); err != nil {
+		return err
+	}
+
+	fmt.Println("begin step wait")
+	_, err := t.dbp.trapWait(t.dbp.Pid)
+	fmt.Println("fin step wait")
+	if err != nil {
+		return err
 	}
 
 	kret = C.clear_trap_flag(t.os.threadAct)
@@ -56,15 +60,28 @@ func (t *Thread) singleStep() error {
 }
 
 func (t *Thread) resume() error {
+	fmt.Println(runtime.Caller(1))
 	t.running = true
 	// TODO(dp) set flag for ptrace stops
 	var err error
-	t.dbp.execPtraceFunc(func() { err = PtraceCont(t.dbp.Pid, 0) })
-	if err == nil {
-		return nil
+	var kret C.kern_return_t
+	var emptyhdr C.mach_msg_header_t
+	if t.os.hdr != emptyhdr {
+		fmt.Println("not empty HEADER")
+		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, 0) })
+		if err == nil {
+			return nil
+		}
+		kret = C.mach_send_reply(t.os.hdr)
+		if kret != C.KERN_SUCCESS {
+			return ErrContinueThread
+		}
 	}
-	kret := C.resume_thread(t.os.threadAct)
+	fmt.Println("resume thread, yo", t.ID)
+	kret = C.resume_thread(t.os.threadAct)
+	fmt.Println("fin resume thread, yo")
 	if kret != C.KERN_SUCCESS {
+		fmt.Println("err.... ")
 		return ErrContinueThread
 	}
 	return nil
