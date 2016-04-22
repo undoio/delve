@@ -92,20 +92,20 @@ func (t *Thread) sendMachReply() error {
 	var kret C.kern_return_t
 	if t.os.msgStop {
 		t.os.msgStop = false
-		sig := 0
-		lastSig := int(t.os.sig)
-		if syscall.Signal(lastSig) == syscall.SIGINT {
-			sig = int(syscall.SIGINT)
+		sig := int(t.os.sig)
+		s := syscall.Signal(sig)
+		// TODO(derekparker) ugly hack... we need to
+		// handle signals in a more general way
+		if s == syscall.SIGTRAP {
+			sig = 0
 		}
-		if syscall.Signal(lastSig) == syscall.SIGCHLD {
-			sig = int(syscall.SIGCHLD)
-		}
-		fmt.Println("sending sig::", sig)
 		var err error
 		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, sig) })
 		if err != nil {
 			log.Println("could not thupdate:", err)
 		}
+
+		fmt.Println("sending sig::", sig)
 		kret = C.mach_send_reply(t.os.hdr)
 		if kret != C.KERN_SUCCESS {
 			return errors.New("could not send mach reply")
