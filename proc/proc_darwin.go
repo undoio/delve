@@ -91,6 +91,7 @@ func Launch(cmd []string) (*Process, error) {
 	if !ok {
 		return nil, errors.New("could not find thread")
 	}
+	th.os.msgStop = true
 	th.os.hdr = hdr
 	th.os.sig = sig
 
@@ -117,8 +118,24 @@ func (dbp *Process) Kill() error {
 	if dbp.exited {
 		return nil
 	}
-	dbp.CurrentThread.os.sig = C.int(syscall.SIGINT)
-	dbp.resume()
+	for _, th := range dbp.Threads {
+		if !th.stopped() {
+			th.halt()
+		}
+	}
+
+	for _, th := range dbp.Threads {
+		th.sendMachReply()
+	}
+	kret := C.task_set_exception_ports(dbp.os.task, C.EXC_MASK_ALL, C.MACH_PORT_NULL, C.EXCEPTION_DEFAULT, C.THREAD_STATE_NONE)
+	if kret != C.KERN_SUCCESS {
+		return errors.New("could not restore exception ports")
+	}
+	syscall.Kill(dbp.Pid, syscall.SIGKILL)
+	for _, th := range dbp.Threads {
+		th.resume()
+	}
+	dbp.wait(dbp.Pid, 0)
 	dbp.postExit()
 	return nil
 }
@@ -285,9 +302,12 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
 		var hdr C.mach_msg_header_t
 		var sig C.int
+		fmt.Println("begin mach wait")
 		port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(0))
+		fmt.Println("fin mach wait")
 		th, ok := dbp.Threads[int(port)]
 		if ok {
+			th.os.msgStop = true
 			th.os.hdr = hdr
 			th.os.sig = sig
 		}
@@ -338,6 +358,7 @@ func (dbp *Process) waitForStop() ([]int, error) {
 		if port != 0 && port != dbp.os.notificationPort {
 			th, ok := dbp.Threads[int(port)]
 			if ok {
+				th.os.msgStop = true
 				th.os.hdr = hdr
 				th.os.sig = sig
 			}

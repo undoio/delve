@@ -23,6 +23,7 @@ type OSSpecificDetails struct {
 	registers C.x86_thread_state64_t
 	hdr       C.mach_msg_header_t
 	sig       C.int
+	msgStop   bool
 }
 
 // ErrContinueThread is the error returned when a thread could not
@@ -89,16 +90,18 @@ func (t *Thread) resume() error {
 func (t *Thread) sendMachReply() error {
 	var emptyhdr C.mach_msg_header_t
 	var kret C.kern_return_t
-	var err error
-	if t.os.hdr != emptyhdr {
+	if t.os.msgStop {
+		t.os.msgStop = false
 		sig := 0
 		lastSig := int(t.os.sig)
 		if syscall.Signal(lastSig) == syscall.SIGINT {
 			sig = int(syscall.SIGINT)
 		}
+		fmt.Println("sending sig::", sig)
+		var err error
 		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, sig) })
 		if err != nil {
-			log.Printf("ptrace_thupdate error: %v", err)
+			log.Println("could not thupdate:", err)
 		}
 		kret = C.mach_send_reply(t.os.hdr)
 		if kret != C.KERN_SUCCESS {

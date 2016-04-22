@@ -37,8 +37,13 @@ func withTestProcess(name string, t testing.TB, fn func(p *Process, fixture prot
 
 	defer func() {
 		if !p.Exited() {
-			p.Halt()
-			p.Kill()
+			if err := p.Halt(); err != nil {
+				t.Fatal(err)
+			}
+			fmt.Println("after test kill")
+			if err := p.Kill(); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}()
 
@@ -133,7 +138,6 @@ func TestHalt(t *testing.T) {
 					if err := p.RequestManualStop(); err != nil {
 						t.Fatal(err)
 					}
-					fmt.Println("finish manual stop")
 					break
 				}
 			}
