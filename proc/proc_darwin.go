@@ -117,12 +117,8 @@ func (dbp *Process) Kill() error {
 	if dbp.exited {
 		return nil
 	}
-	dbp.execPtraceFunc(func() { PtraceThupdate(dbp.Pid, dbp.CurrentThread.os.threadAct, int(syscall.SIGKILL)) })
-	if kret := C.task_terminate(dbp.os.task); kret != C.KERN_SUCCESS {
-		errstr := C.GoString(C.mach_error_string(C.mach_error_t(kret)))
-		return fmt.Errorf("could not terminate task: %s", errstr)
-	}
-	dbp.trapWait(-1)
+	dbp.CurrentThread.os.sig = C.int(syscall.SIGINT)
+	dbp.resume()
 	dbp.postExit()
 	return nil
 }
@@ -321,20 +317,6 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 		// Since we cannot be notified of new threads on OS X
 		// this is as good a time as any to check for them.
 		dbp.updateThreadList()
-		if !ok {
-			if dbp.halt {
-				dbp.halt = false
-				return th, nil
-			}
-			if dbp.firstStart || th.singleStepping {
-				dbp.firstStart = false
-				return th, nil
-			}
-			if err := th.Continue(); err != nil {
-				return nil, err
-			}
-			continue
-		}
 		if syscall.Signal(sig) == syscall.SIGINT {
 			dbp.resume()
 			return dbp.trapWait(pid)

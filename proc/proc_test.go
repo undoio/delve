@@ -133,6 +133,7 @@ func TestHalt(t *testing.T) {
 					if err := p.RequestManualStop(); err != nil {
 						t.Fatal(err)
 					}
+					fmt.Println("finish manual stop")
 					break
 				}
 			}
