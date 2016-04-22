@@ -916,10 +916,11 @@ func TestBreakpointOnFunctionEntry(t *testing.T) {
 
 func TestProcessReceivesSIGCHLD(t *testing.T) {
 	withTestProcess("sigchldprog", t, func(p *Process, fixture protest.Fixture) {
+		p.Continue()
 		err := p.Continue()
 		_, ok := err.(ProcessExitedError)
 		if !ok {
-			t.Fatalf("Continue() returned unexpected error type %s", err)
+			t.Fatalf("Continue() returned unexpected error type %v", err)
 		}
 	})
 }

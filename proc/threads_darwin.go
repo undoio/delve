@@ -97,6 +97,9 @@ func (t *Thread) sendMachReply() error {
 		if syscall.Signal(lastSig) == syscall.SIGINT {
 			sig = int(syscall.SIGINT)
 		}
+		if syscall.Signal(lastSig) == syscall.SIGCHLD {
+			sig = int(syscall.SIGCHLD)
+		}
 		fmt.Println("sending sig::", sig)
 		var err error
 		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, sig) })
