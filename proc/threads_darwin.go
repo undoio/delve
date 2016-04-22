@@ -4,8 +4,10 @@ package proc
 // #include "proc_darwin.h"
 import "C"
 import (
+	"errors"
 	"fmt"
-	"runtime"
+	"log"
+	"syscall"
 	"unsafe"
 
 	sys "golang.org/x/sys/unix"
@@ -20,69 +22,89 @@ type OSSpecificDetails struct {
 	threadAct C.thread_act_t
 	registers C.x86_thread_state64_t
 	hdr       C.mach_msg_header_t
+	sig       C.int
 }
 
 // ErrContinueThread is the error returned when a thread could not
 // be continued.
 var ErrContinueThread = fmt.Errorf("could not continue thread")
 
-func (t *Thread) halt() (err error) {
+func (t *Thread) halt() error {
 	kret := C.thread_suspend(t.os.threadAct)
 	if kret != C.KERN_SUCCESS {
 		errStr := C.GoString(C.mach_error_string(C.mach_error_t(kret)))
-		err = fmt.Errorf("could not suspend thread %d %s", t.ID, errStr)
-		return
+		return fmt.Errorf("could not suspend thread %d %s", t.ID, errStr)
 	}
-	return
+	return nil
 }
 
 func (t *Thread) singleStep() error {
-	kret := C.set_single_step_flag(t.os.threadAct)
-	if kret != C.KERN_SUCCESS {
+	for _, th := range t.dbp.Threads {
+		if th.ID == t.ID {
+			continue
+		}
+		if err := th.halt(); err != nil {
+			return err
+		}
+	}
+	for _, th := range t.dbp.Threads {
+		if th.ID == t.ID {
+			continue
+		}
+		if err := th.sendMachReply(); err != nil {
+			return err
+		}
+	}
+	if C.set_single_step_flag(t.os.threadAct) != C.KERN_SUCCESS {
 		return fmt.Errorf("could not single step")
 	}
 	if err := t.resume(); err != nil {
 		return err
 	}
 
-	fmt.Println("begin step wait")
 	_, err := t.dbp.trapWait(t.dbp.Pid)
-	fmt.Println("fin step wait")
 	if err != nil {
 		return err
 	}
 
-	kret = C.clear_trap_flag(t.os.threadAct)
-	if kret != C.KERN_SUCCESS {
+	if C.clear_trap_flag(t.os.threadAct) != C.KERN_SUCCESS {
 		return fmt.Errorf("could not clear CPU trap flag")
 	}
 	return nil
 }
 
 func (t *Thread) resume() error {
-	fmt.Println(runtime.Caller(1))
 	t.running = true
-	// TODO(dp) set flag for ptrace stops
-	var err error
 	var kret C.kern_return_t
+	if err := t.sendMachReply(); err != nil {
+		return ErrContinueThread
+	}
+	kret = C.resume_thread(t.os.threadAct)
+	if kret != C.KERN_SUCCESS {
+		return ErrContinueThread
+	}
+	return nil
+}
+
+func (t *Thread) sendMachReply() error {
 	var emptyhdr C.mach_msg_header_t
+	var kret C.kern_return_t
+	var err error
 	if t.os.hdr != emptyhdr {
-		fmt.Println("not empty HEADER")
-		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, 0) })
-		if err == nil {
-			return nil
+		sig := 0
+		lastSig := int(t.os.sig)
+		if syscall.Signal(lastSig) == syscall.SIGINT {
+			sig = int(syscall.SIGINT)
+		}
+		t.dbp.execPtraceFunc(func() { err = PtraceThupdate(t.dbp.Pid, t.os.threadAct, sig) })
+		if err != nil {
+			log.Printf("ptrace_thupdate error: %v", err)
 		}
 		kret = C.mach_send_reply(t.os.hdr)
 		if kret != C.KERN_SUCCESS {
-			return ErrContinueThread
+			return errors.New("could not send mach reply")
 		}
-	}
-	fmt.Println("resume thread, yo", t.ID)
-	kret = C.resume_thread(t.os.threadAct)
-	fmt.Println("fin resume thread, yo")
-	if kret != C.KERN_SUCCESS {
-		fmt.Println("err.... ")
-		return ErrContinueThread
+		t.os.hdr = emptyhdr
 	}
 	return nil
 }

@@ -36,9 +36,10 @@ func withTestProcess(name string, t testing.TB, fn func(p *Process, fixture prot
 	}
 
 	defer func() {
-		p.Halt()
-		panic("about to kill")
-		p.Kill()
+		if !p.Exited() {
+			p.Halt()
+			p.Kill()
+		}
 	}()
 
 	fn(p, fixture)
@@ -377,9 +378,7 @@ func TestNextConcurrent(t *testing.T) {
 			if ln != tc.begin {
 				t.Fatalf("Program not stopped at correct spot expected %d was %s:%d", tc.begin, filepath.Base(f), ln)
 			}
-			fmt.Println(" ----begin next----")
 			assertNoError(p.Next(), t, "Next() returned an error")
-			fmt.Println(" ----fin next----")
 			f, ln = currentLineNumber(p, t)
 			if ln != tc.end {
 				t.Fatalf("Program did not continue to correct next location expected %d was %s:%d", tc.end, filepath.Base(f), ln)
@@ -392,7 +391,6 @@ func TestNextConcurrent(t *testing.T) {
 			}
 		}
 	})
-	fmt.Println(" _________________---------------")
 }
 
 func TestNextConcurrentVariant2(t *testing.T) {

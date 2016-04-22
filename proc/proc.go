@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"log"
 	"os"
 	"runtime"
 	"strconv"
@@ -345,8 +346,6 @@ func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 // process. It will continue until it hits a breakpoint
 // or is otherwise stopped.
 func (dbp *Process) Continue() error {
-	_, f, l, _ := runtime.Caller(1)
-	fmt.Println("continueeeeeeeeeeeeeeeeeee", f, l)
 	if dbp.exited {
 		return &ProcessExitedError{}
 	}
@@ -368,17 +367,18 @@ func (dbp *Process) Continue() error {
 		if err := dbp.Halt(); err != nil {
 			return dbp.exitGuard(err)
 		}
-		if err := dbp.setCurrentBreakpoints(trapthread); err != nil {
-			return err
-		}
-		if err := dbp.pickCurrentThread(trapthread); err != nil {
-			return err
+		if trapthread != nil {
+			if err := dbp.setCurrentBreakpoints(trapthread); err != nil {
+				return err
+			}
+			if err := dbp.pickCurrentThread(trapthread); err != nil {
+				return err
+			}
 		}
 
 		switch {
 		case dbp.CurrentThread.CurrentBreakpoint == nil:
 			if dbp.halt {
-				fmt.Println("haaaaaaaaaaaaaaaaaaaaaaaaaalted")
 				return nil
 			}
 			// runtime.Breakpoint or manual stop
@@ -438,8 +438,10 @@ func (dbp *Process) pickCurrentThread(trapthread *Thread) error {
 			return dbp.SwitchThread(th.ID)
 		}
 	}
-	if trapthread.onTriggeredBreakpoint() {
-		return dbp.SwitchThread(trapthread.ID)
+	if trapthread != nil {
+		if trapthread.onTriggeredBreakpoint() {
+			return dbp.SwitchThread(trapthread.ID)
+		}
 	}
 	for _, th := range dbp.Threads {
 		if th.onTriggeredBreakpoint() {
@@ -897,6 +899,11 @@ func (dbp *Process) ConvertEvalScope(gid, frame int) (*EvalScope, error) {
 }
 
 func (dbp *Process) postExit() {
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("error during postExit: %v", err)
+		}
+	}()
 	dbp.exited = true
 	close(dbp.ptraceChan)
 	close(dbp.ptraceDoneChan)

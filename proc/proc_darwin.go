@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/debug/macho"
@@ -77,7 +78,8 @@ func Launch(cmd []string) (*Process, error) {
 	}
 
 	var hdr C.mach_msg_header_t
-	port := C.mach_port_wait(dbp.os.portSet, &hdr, C.int(0))
+	var sig C.int
+	port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(0))
 	if port == 0 {
 		return nil, errors.New("error while waiting for process to exec")
 	}
@@ -90,6 +92,7 @@ func Launch(cmd []string) (*Process, error) {
 		return nil, errors.New("could not find thread")
 	}
 	th.os.hdr = hdr
+	th.os.sig = sig
 
 	return dbp, nil
 }
@@ -114,16 +117,12 @@ func (dbp *Process) Kill() error {
 	if dbp.exited {
 		return nil
 	}
-	var err error
-	dbp.execPtraceFunc(func() { err = PtraceThupdate(dbp.Pid, dbp.CurrentThread.os.threadAct, int(sys.SIGKILL)) })
-	if err != nil {
-		fmt.Println(err)
-		return err
+	dbp.execPtraceFunc(func() { PtraceThupdate(dbp.Pid, dbp.CurrentThread.os.threadAct, int(syscall.SIGKILL)) })
+	if kret := C.task_terminate(dbp.os.task); kret != C.KERN_SUCCESS {
+		errstr := C.GoString(C.mach_error_string(C.mach_error_t(kret)))
+		return fmt.Errorf("could not terminate task: %s", errstr)
 	}
-	err = dbp.Continue()
-	if _, ok := err.(ProcessExitedError); !ok {
-		return errors.New("could not kill process")
-	}
+	dbp.trapWait(-1)
 	dbp.postExit()
 	return nil
 }
@@ -289,12 +288,12 @@ func (dbp *Process) findExecutable(path string) (*macho.File, error) {
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
 		var hdr C.mach_msg_header_t
-		fmt.Println("begin mach wait")
-		port := C.mach_port_wait(dbp.os.portSet, &hdr, C.int(0))
-		fmt.Println("fin mach wait")
+		var sig C.int
+		port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(0))
 		th, ok := dbp.Threads[int(port)]
 		if ok {
 			th.os.hdr = hdr
+			th.os.sig = sig
 		}
 
 		switch port {
@@ -313,7 +312,7 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 				// process natural death _sometimes_.
 				continue
 			}
-			return nil, nil
+			return th, nil
 
 		case 0:
 			return nil, fmt.Errorf("error while waiting for task")
@@ -336,6 +335,10 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			}
 			continue
 		}
+		if syscall.Signal(sig) == syscall.SIGINT {
+			dbp.resume()
+			return dbp.trapWait(pid)
+		}
 		return th, nil
 	}
 }
@@ -345,8 +348,17 @@ func (dbp *Process) waitForStop() ([]int, error) {
 	count := 0
 	for {
 		var hdr C.mach_msg_header_t
-		port := C.mach_port_wait(dbp.os.portSet, &hdr, C.int(1))
-		if port != 0 {
+		var sig C.int
+		port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(1))
+		if port == 0 {
+			return ports, nil
+		}
+		if port != 0 && port != dbp.os.notificationPort {
+			th, ok := dbp.Threads[int(port)]
+			if ok {
+				th.os.hdr = hdr
+				th.os.sig = sig
+			}
 			count = 0
 			ports = append(ports, int(port))
 		} else {
@@ -406,19 +418,15 @@ func (dbp *Process) exitGuard(err error) error {
 }
 
 func (dbp *Process) resume() error {
-	fmt.Println("resume ....")
 	// all threads stopped over a breakpoint are made to step over it
 	for _, thread := range dbp.Threads {
 		if thread.CurrentBreakpoint != nil {
-			fmt.Println("step ....")
 			if err := thread.StepInstruction(); err != nil {
 				return err
 			}
-			fmt.Println("fin step")
 			thread.CurrentBreakpoint = nil
 		}
 	}
-	fmt.Println("resume threads")
 	// everything is resumed
 	for _, thread := range dbp.Threads {
 		if err := thread.resume(); err != nil {

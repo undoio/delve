@@ -115,7 +115,7 @@ thread_count(task_t task) {
 }
 
 mach_port_t
-mach_port_wait(mach_port_t port_set, mach_msg_header_t *thdr, int nonblocking) {
+mach_port_wait(mach_port_t port_set, mach_msg_header_t *thdr, int *sig, int nonblocking) {
 	kern_return_t kret;
 	thread_act_t thread;
 	NDR_record_t *ndr;
@@ -132,7 +132,8 @@ mach_port_wait(mach_port_t port_set, mach_msg_header_t *thdr, int nonblocking) {
 
 	// Wait for mach msg.
 	kret = mach_msg(&msg.hdr, opts,
-			0, sizeof(msg.data), port_set, 10, MACH_PORT_NULL);
+			0, sizeof(msg.data), port_set,
+			10, MACH_PORT_NULL);
 	if (kret == MACH_RCV_INTERRUPTED) return kret;
 	if (kret != MACH_MSG_SUCCESS) return 0;
 
@@ -146,6 +147,9 @@ mach_port_wait(mach_port_t port_set, mach_msg_header_t *thdr, int nonblocking) {
 
 	switch (msg.hdr.msgh_id) {
 		case 2401: // Exception
+			if (data[2] == EXC_SOFT_SIGNAL) {
+				*sig = data[3];
+			}
 			return thread;
 
 		case 72: // Death
