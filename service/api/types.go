@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"strconv"
 	"unicode"
-
-	"github.com/derekparker/delve/proc"
 )
 
 // DebuggerState represents the current context of the debugger.
@@ -227,10 +225,10 @@ const (
 
 type AssemblyFlavour int
 
-const (
-	GNUFlavour   = AssemblyFlavour(proc.GNUFlavour)
-	IntelFlavour = AssemblyFlavour(proc.IntelFlavour)
-)
+// const (
+// 	GNUFlavour   = AssemblyFlavour(debugger.GNUFlavour)
+// 	IntelFlavour = AssemblyFlavour(debugger.IntelFlavour)
+// )
 
 // AsmInstruction represents one assembly instruction at some address
 type AsmInstruction struct {

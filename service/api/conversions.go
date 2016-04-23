@@ -1,219 +1,206 @@
 package api
 
-import (
-	"bytes"
-	"debug/gosym"
-	"go/constant"
-	"go/printer"
-	"go/token"
-	"golang.org/x/debug/dwarf"
-	"reflect"
-	"strconv"
+// // ConvertBreakpoint converts from a proc.Breakpoint to
+// // an api.Breakpoint.
+// func ConvertBreakpoint(bp *debugger.Breakpoint) *Breakpoint {
+// 	b := &Breakpoint{
+// 		Name:          bp.Name,
+// 		ID:            bp.ID,
+// 		FunctionName:  bp.FunctionName,
+// 		File:          bp.File,
+// 		Line:          bp.Line,
+// 		Addr:          bp.Addr,
+// 		Tracepoint:    bp.Tracepoint,
+// 		Stacktrace:    bp.Stacktrace,
+// 		Goroutine:     bp.Goroutine,
+// 		Variables:     bp.Variables,
+// 		TotalHitCount: bp.TotalHitCount,
+// 	}
 
-	"github.com/derekparker/delve/proc"
-)
+// 	b.HitCount = map[string]uint64{}
+// 	for idx := range bp.HitCount {
+// 		b.HitCount[strconv.Itoa(idx)] = bp.HitCount[idx]
+// 	}
 
-// ConvertBreakpoint converts from a proc.Breakpoint to
-// an api.Breakpoint.
-func ConvertBreakpoint(bp *proc.Breakpoint) *Breakpoint {
-	b := &Breakpoint{
-		Name:          bp.Name,
-		ID:            bp.ID,
-		FunctionName:  bp.FunctionName,
-		File:          bp.File,
-		Line:          bp.Line,
-		Addr:          bp.Addr,
-		Tracepoint:    bp.Tracepoint,
-		Stacktrace:    bp.Stacktrace,
-		Goroutine:     bp.Goroutine,
-		Variables:     bp.Variables,
-		TotalHitCount: bp.TotalHitCount,
-	}
+// 	var buf bytes.Buffer
+// 	printer.Fprint(&buf, token.NewFileSet(), bp.Cond)
+// 	b.Cond = buf.String()
 
-	b.HitCount = map[string]uint64{}
-	for idx := range bp.HitCount {
-		b.HitCount[strconv.Itoa(idx)] = bp.HitCount[idx]
-	}
+// 	return b
+// }
 
-	var buf bytes.Buffer
-	printer.Fprint(&buf, token.NewFileSet(), bp.Cond)
-	b.Cond = buf.String()
+// // ConvertThread converts a proc.Thread into an
+// // api thread.
+// func ConvertThread(th *proc.Thread) *Thread {
+// 	var (
+// 		function *Function
+// 		file     string
+// 		line     int
+// 		pc       uint64
+// 		gid      int
+// 	)
 
-	return b
-}
+// 	loc, err := th.Location()
+// 	if err == nil {
+// 		pc = loc.PC
+// 		file = loc.File
+// 		line = loc.Line
+// 		function = ConvertFunction(loc.Fn)
+// 	}
 
-// ConvertThread converts a proc.Thread into an
-// api thread.
-func ConvertThread(th *proc.Thread) *Thread {
-	var (
-		function *Function
-		file     string
-		line     int
-		pc       uint64
-		gid      int
-	)
+// 	var bp *Breakpoint
 
-	loc, err := th.Location()
-	if err == nil {
-		pc = loc.PC
-		file = loc.File
-		line = loc.Line
-		function = ConvertFunction(loc.Fn)
-	}
+// 	if th.CurrentBreakpoint != nil && th.BreakpointConditionMet {
+// 		bp = ConvertBreakpoint(th.CurrentBreakpoint)
+// 	}
 
-	var bp *Breakpoint
+// 	if g, _ := th.GetG(); g != nil {
+// 		gid = g.ID
+// 	}
 
-	if th.CurrentBreakpoint != nil && th.BreakpointConditionMet {
-		bp = ConvertBreakpoint(th.CurrentBreakpoint)
-	}
+// 	return &Thread{
+// 		ID:          th.ID,
+// 		PC:          pc,
+// 		File:        file,
+// 		Line:        line,
+// 		Function:    function,
+// 		GoroutineID: gid,
+// 		Breakpoint:  bp,
+// 	}
+// }
 
-	if g, _ := th.GetG(); g != nil {
-		gid = g.ID
-	}
+// func prettyTypeName(typ dwarf.Type) string {
+// 	if typ == nil {
+// 		return ""
+// 	}
+// 	r := typ.String()
+// 	if r == "*void" {
+// 		return "unsafe.Pointer"
+// 	}
+// 	return r
+// }
 
-	return &Thread{
-		ID:          th.ID,
-		PC:          pc,
-		File:        file,
-		Line:        line,
-		Function:    function,
-		GoroutineID: gid,
-		Breakpoint:  bp,
-	}
-}
+// // ConvertVar converts from proc.Variable to api.Variable.
+// func ConvertVar(v *proc.Variable) *Variable {
+// 	r := Variable{
+// 		Addr:     v.Addr,
+// 		OnlyAddr: v.OnlyAddr,
+// 		Name:     v.Name,
+// 		Kind:     v.Kind,
+// 		Len:      v.Len,
+// 		Cap:      v.Cap,
+// 	}
 
-func prettyTypeName(typ dwarf.Type) string {
-	if typ == nil {
-		return ""
-	}
-	r := typ.String()
-	if r == "*void" {
-		return "unsafe.Pointer"
-	}
-	return r
-}
+// 	r.Type = prettyTypeName(v.DwarfType)
+// 	r.RealType = prettyTypeName(v.RealType)
 
-// ConvertVar converts from proc.Variable to api.Variable.
-func ConvertVar(v *proc.Variable) *Variable {
-	r := Variable{
-		Addr:     v.Addr,
-		OnlyAddr: v.OnlyAddr,
-		Name:     v.Name,
-		Kind:     v.Kind,
-		Len:      v.Len,
-		Cap:      v.Cap,
-	}
+// 	if v.Unreadable != nil {
+// 		r.Unreadable = v.Unreadable.Error()
+// 	}
 
-	r.Type = prettyTypeName(v.DwarfType)
-	r.RealType = prettyTypeName(v.RealType)
+// 	if v.Value != nil {
+// 		switch v.Kind {
+// 		case reflect.Float32:
+// 			f, _ := constant.Float64Val(v.Value)
+// 			r.Value = strconv.FormatFloat(f, 'f', -1, 32)
+// 		case reflect.Float64:
+// 			f, _ := constant.Float64Val(v.Value)
+// 			r.Value = strconv.FormatFloat(f, 'f', -1, 64)
+// 		case reflect.String, reflect.Func:
+// 			r.Value = constant.StringVal(v.Value)
+// 		default:
+// 			r.Value = v.Value.String()
+// 		}
+// 	}
 
-	if v.Unreadable != nil {
-		r.Unreadable = v.Unreadable.Error()
-	}
+// 	switch v.Kind {
+// 	case reflect.Complex64:
+// 		r.Children = make([]Variable, 2)
+// 		r.Len = 2
 
-	if v.Value != nil {
-		switch v.Kind {
-		case reflect.Float32:
-			f, _ := constant.Float64Val(v.Value)
-			r.Value = strconv.FormatFloat(f, 'f', -1, 32)
-		case reflect.Float64:
-			f, _ := constant.Float64Val(v.Value)
-			r.Value = strconv.FormatFloat(f, 'f', -1, 64)
-		case reflect.String, reflect.Func:
-			r.Value = constant.StringVal(v.Value)
-		default:
-			r.Value = v.Value.String()
-		}
-	}
+// 		real, _ := constant.Float64Val(constant.Real(v.Value))
+// 		imag, _ := constant.Float64Val(constant.Imag(v.Value))
 
-	switch v.Kind {
-	case reflect.Complex64:
-		r.Children = make([]Variable, 2)
-		r.Len = 2
+// 		r.Children[0].Name = "real"
+// 		r.Children[0].Kind = reflect.Float32
+// 		r.Children[0].Value = strconv.FormatFloat(real, 'f', -1, 32)
 
-		real, _ := constant.Float64Val(constant.Real(v.Value))
-		imag, _ := constant.Float64Val(constant.Imag(v.Value))
+// 		r.Children[1].Name = "imaginary"
+// 		r.Children[1].Kind = reflect.Float32
+// 		r.Children[1].Value = strconv.FormatFloat(imag, 'f', -1, 32)
+// 	case reflect.Complex128:
+// 		r.Children = make([]Variable, 2)
+// 		r.Len = 2
 
-		r.Children[0].Name = "real"
-		r.Children[0].Kind = reflect.Float32
-		r.Children[0].Value = strconv.FormatFloat(real, 'f', -1, 32)
+// 		real, _ := constant.Float64Val(constant.Real(v.Value))
+// 		imag, _ := constant.Float64Val(constant.Imag(v.Value))
 
-		r.Children[1].Name = "imaginary"
-		r.Children[1].Kind = reflect.Float32
-		r.Children[1].Value = strconv.FormatFloat(imag, 'f', -1, 32)
-	case reflect.Complex128:
-		r.Children = make([]Variable, 2)
-		r.Len = 2
+// 		r.Children[0].Name = "real"
+// 		r.Children[0].Kind = reflect.Float64
+// 		r.Children[0].Value = strconv.FormatFloat(real, 'f', -1, 64)
 
-		real, _ := constant.Float64Val(constant.Real(v.Value))
-		imag, _ := constant.Float64Val(constant.Imag(v.Value))
+// 		r.Children[1].Name = "imaginary"
+// 		r.Children[1].Kind = reflect.Float64
+// 		r.Children[1].Value = strconv.FormatFloat(imag, 'f', -1, 64)
 
-		r.Children[0].Name = "real"
-		r.Children[0].Kind = reflect.Float64
-		r.Children[0].Value = strconv.FormatFloat(real, 'f', -1, 64)
+// 	default:
+// 		r.Children = make([]Variable, len(v.Children))
 
-		r.Children[1].Name = "imaginary"
-		r.Children[1].Kind = reflect.Float64
-		r.Children[1].Value = strconv.FormatFloat(imag, 'f', -1, 64)
+// 		for i := range v.Children {
+// 			r.Children[i] = *ConvertVar(&v.Children[i])
+// 		}
+// 	}
 
-	default:
-		r.Children = make([]Variable, len(v.Children))
+// 	return &r
+// }
 
-		for i := range v.Children {
-			r.Children[i] = *ConvertVar(&v.Children[i])
-		}
-	}
+// // ConvertFunction converts from gosym.Func to
+// // api.Function.
+// func ConvertFunction(fn *gosym.Func) *Function {
+// 	if fn == nil {
+// 		return nil
+// 	}
 
-	return &r
-}
+// 	return &Function{
+// 		Name:   fn.Name,
+// 		Type:   fn.Type,
+// 		Value:  fn.Value,
+// 		GoType: fn.GoType,
+// 	}
+// }
 
-// ConvertFunction converts from gosym.Func to
-// api.Function.
-func ConvertFunction(fn *gosym.Func) *Function {
-	if fn == nil {
-		return nil
-	}
+// // ConvertGoroutine converts from proc.G to api.Goroutine.
+// func ConvertGoroutine(g *proc.G) *Goroutine {
+// 	return &Goroutine{
+// 		ID:             g.ID,
+// 		CurrentLoc:     ConvertLocation(g.CurrentLoc),
+// 		UserCurrentLoc: ConvertLocation(g.UserCurrent()),
+// 		GoStatementLoc: ConvertLocation(g.Go()),
+// 	}
+// }
 
-	return &Function{
-		Name:   fn.Name,
-		Type:   fn.Type,
-		Value:  fn.Value,
-		GoType: fn.GoType,
-	}
-}
+// // ConvertLocation converts from proc.Location to api.Location.
+// func ConvertLocation(loc proc.Location) Location {
+// 	return Location{
+// 		PC:       loc.PC,
+// 		File:     loc.File,
+// 		Line:     loc.Line,
+// 		Function: ConvertFunction(loc.Fn),
+// 	}
+// }
 
-// ConvertGoroutine converts from proc.G to api.Goroutine.
-func ConvertGoroutine(g *proc.G) *Goroutine {
-	return &Goroutine{
-		ID:             g.ID,
-		CurrentLoc:     ConvertLocation(g.CurrentLoc),
-		UserCurrentLoc: ConvertLocation(g.UserCurrent()),
-		GoStatementLoc: ConvertLocation(g.Go()),
-	}
-}
-
-// ConvertLocation converts from proc.Location to api.Location.
-func ConvertLocation(loc proc.Location) Location {
-	return Location{
-		PC:       loc.PC,
-		File:     loc.File,
-		Line:     loc.Line,
-		Function: ConvertFunction(loc.Fn),
-	}
-}
-
-func ConvertAsmInstruction(inst proc.AsmInstruction, text string) AsmInstruction {
-	var destloc *Location
-	if inst.DestLoc != nil {
-		r := ConvertLocation(*inst.DestLoc)
-		destloc = &r
-	}
-	return AsmInstruction{
-		Loc:        ConvertLocation(inst.Loc),
-		DestLoc:    destloc,
-		Text:       text,
-		Bytes:      inst.Bytes,
-		Breakpoint: inst.Breakpoint,
-		AtPC:       inst.AtPC,
-	}
-}
+// func ConvertAsmInstruction(inst proc.AsmInstruction, text string) AsmInstruction {
+// 	var destloc *Location
+// 	if inst.DestLoc != nil {
+// 		r := ConvertLocation(*inst.DestLoc)
+// 		destloc = &r
+// 	}
+// 	return AsmInstruction{
+// 		Loc:        ConvertLocation(inst.Loc),
+// 		DestLoc:    destloc,
+// 		Text:       text,
+// 		Bytes:      inst.Bytes,
+// 		Breakpoint: inst.Breakpoint,
+// 		AtPC:       inst.AtPC,
+// 	}
+// }
