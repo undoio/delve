@@ -17,8 +17,7 @@ import (
 
 	"golang.org/x/debug/dwarf"
 
-	"github.com/derekparker/delve/pkg/dwarf/frame"
-	"github.com/derekparker/delve/pkg/dwarf/line"
+	pdwarf "github.com/derekparker/delve/pkg/dwarf"
 	"github.com/derekparker/delve/pkg/dwarf/reader"
 )
 
@@ -42,14 +41,9 @@ type Process struct {
 	// Normally SelectedGoroutine is CurrentThread.GetG, it will not be only if SwitchGoroutine is called with a goroutine that isn't attached to a thread
 	SelectedGoroutine *G
 
-	// Maps package names to package paths, needed to lookup types inside DWARF info
-	packageMap map[string]string
-
 	allGCache               []*G
-	dwarf                   *dwarf.Data
-	goSymTable              *gosym.Table
-	frameEntries            frame.FrameDescriptionEntries
-	lineInfo                line.DebugLines
+	dwarf                   *pdwarf.Dwarf
+	symboltab               *gosym.Table
 	os                      *OSProcessDetails
 	arch                    Arch
 	breakpointIDCounter     int
@@ -57,7 +51,6 @@ type Process struct {
 	firstStart              bool
 	halt                    bool
 	exited                  bool
-	types                   map[string]dwarf.Offset
 }
 
 // New returns an initialized Process struct.
@@ -135,17 +128,19 @@ func (dbp *Process) Running() bool {
 func (dbp *Process) LoadInformation(path string) error {
 	var wg sync.WaitGroup
 
-	exe, err := dbp.findExecutable(path)
+	path, exe, err := dbp.findExecutable(path)
 	if err != nil {
 		return err
 	}
 
-	wg.Add(5)
+	dbp.dwarf, err = pdwarf.Parse(path)
+	if err != nil {
+		return err
+	}
+
+	wg.Add(2)
 	go dbp.loadProcessInformation(&wg)
-	go dbp.parseDebugFrame(exe, &wg)
 	go dbp.obtainGoSymbols(exe, &wg)
-	go dbp.parseDebugLineInfo(exe, &wg)
-	go dbp.loadTypeMap(&wg)
 	wg.Wait()
 
 	return nil
@@ -154,7 +149,7 @@ func (dbp *Process) LoadInformation(path string) error {
 // FindFileLocation returns the PC for a given file:line.
 // Assumes that `file` is normailzed to lower case and '/' on Windows.
 func (dbp *Process) FindFileLocation(fileName string, lineno int) (uint64, error) {
-	pc, fn, err := dbp.goSymTable.LineToPC(fileName, lineno)
+	pc, fn, err := dbp.symboltab.LineToPC(fileName, lineno)
 	if err != nil {
 		return 0, err
 	}
@@ -171,7 +166,7 @@ func (dbp *Process) FindFileLocation(fileName string, lineno int) (uint64, error
 // Note that setting breakpoints at that address will cause surprising behavior:
 // https://github.com/derekparker/delve/issues/170
 func (dbp *Process) FindFunctionLocation(funcName string, firstLine bool, lineOffset int) (uint64, error) {
-	origfn := dbp.goSymTable.LookupFunc(funcName)
+	origfn := dbp.symboltab.LookupFunc(funcName)
 	if origfn == nil {
 		return 0, fmt.Errorf("Could not find function %s\n", funcName)
 	}
@@ -179,8 +174,8 @@ func (dbp *Process) FindFunctionLocation(funcName string, firstLine bool, lineOf
 	if firstLine {
 		return dbp.FirstPCAfterPrologue(origfn, false)
 	} else if lineOffset > 0 {
-		filename, lineno, _ := dbp.goSymTable.PCToLine(origfn.Entry)
-		breakAddr, _, err := dbp.goSymTable.LineToPC(filename, lineno+lineOffset)
+		filename, lineno, _ := dbp.symboltab.PCToLine(origfn.Entry)
+		breakAddr, _, err := dbp.symboltab.LineToPC(filename, lineno+lineOffset)
 		return breakAddr, err
 	}
 
@@ -567,13 +562,13 @@ func (dbp *Process) GoroutinesInfo() ([]*G, error) {
 	if err != nil {
 		return nil, err
 	}
-	allglenBytes, err := dbp.CurrentThread.readMemory(uintptr(addr), 8)
+	allglenBytes, err := dbp.CurrentThread.Read(addr, 8)
 	if err != nil {
 		return nil, err
 	}
 	allglen := binary.LittleEndian.Uint64(allglenBytes)
-
 	rdr.Seek(0)
+
 	allgentryaddr, err := rdr.AddrFor("runtime.allgs")
 	if err != nil {
 		// try old name (pre Go 1.6)
@@ -582,7 +577,7 @@ func (dbp *Process) GoroutinesInfo() ([]*G, error) {
 			return nil, err
 		}
 	}
-	faddr, err := dbp.CurrentThread.readMemory(uintptr(allgentryaddr), dbp.arch.PtrSize())
+	faddr, err := dbp.CurrentThread.Read(allgentryaddr, dbp.arch.PtrSize())
 	allgptr := binary.LittleEndian.Uint64(faddr)
 
 	for i := uint64(0); i < allglen; i++ {
@@ -643,23 +638,23 @@ func (dbp *Process) CurrentBreakpoint() *Breakpoint {
 
 // DwarfReader returns a reader for the dwarf data
 func (dbp *Process) DwarfReader() *reader.Reader {
-	return reader.New(dbp.dwarf)
+	return dbp.dwarf.Reader()
 }
 
 // Sources returns list of source files that comprise the debugged binary.
 func (dbp *Process) Sources() map[string]*gosym.Obj {
-	return dbp.goSymTable.Files
+	return dbp.symboltab.Files
 }
 
 // Funcs returns list of functions present in the debugged program.
 func (dbp *Process) Funcs() []gosym.Func {
-	return dbp.goSymTable.Funcs
+	return dbp.symboltab.Funcs
 }
 
 // Types returns list of types present in the debugged program.
 func (dbp *Process) Types() ([]string, error) {
-	types := make([]string, 0, len(dbp.types))
-	for k := range dbp.types {
+	types := make([]string, 0, len(dbp.dwarf.Types))
+	for k := range dbp.dwarf.Types {
 		types = append(types, k)
 	}
 	return types, nil
@@ -667,7 +662,7 @@ func (dbp *Process) Types() ([]string, error) {
 
 // PCToLine converts an instruction address to a file/line/function.
 func (dbp *Process) PCToLine(pc uint64) (string, int, *gosym.Func) {
-	return dbp.goSymTable.PCToLine(pc)
+	return dbp.symboltab.PCToLine(pc)
 }
 
 // FindBreakpointByID finds the breakpoint for the given ID.
@@ -803,7 +798,6 @@ func (dbp *Process) getGoInformation() (ver GoVersion, isextld bool, err error) 
 	}
 
 	rdr := dbp.DwarfReader()
-	rdr.Seek(0)
 	for entry, err := rdr.NextCompileUnit(); entry != nil; entry, err = rdr.NextCompileUnit() {
 		if err != nil {
 			return ver, isextld, err

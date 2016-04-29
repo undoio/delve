@@ -24,10 +24,10 @@ type Breakpoint struct {
 	Temp         bool   // Whether this is a temp breakpoint (for next'ing).
 
 	// Breakpoint information
-	Tracepoint    bool           // Tracepoint flag
-	Goroutine     bool           // Retrieve goroutine information
-	Stacktrace    int            // Number of stack frames to retrieve
-	Variables     []string       // Variables to evaluate
+	Tracepoint    bool     // Tracepoint flag
+	Goroutine     bool     // Retrieve goroutine information
+	Stacktrace    int      // Number of stack frames to retrieve
+	Variables     []string // Variables to evaluate
 	LoadArgs      *LoadConfig
 	LoadLocals    *LoadConfig
 	HitCount      map[int]uint64 // Number of times a breakpoint has been reached in a certain goroutine
@@ -43,7 +43,7 @@ func (bp *Breakpoint) String() string {
 // Clear this breakpoint appropriately depending on whether it is a
 // hardware or software breakpoint.
 func (bp *Breakpoint) Clear(thread *Thread) (*Breakpoint, error) {
-	if _, err := thread.writeMemory(uintptr(bp.Addr), bp.OriginalData); err != nil {
+	if _, err := thread.Write(bp.Addr, bp.OriginalData); err != nil {
 		return nil, fmt.Errorf("could not clear breakpoint %s", err)
 	}
 	return bp, nil
@@ -76,7 +76,7 @@ func (dbp *Process) setBreakpoint(tid int, addr uint64, temp bool) (*Breakpoint,
 		return nil, BreakpointExistsError{bp.File, bp.Line, bp.Addr}
 	}
 
-	f, l, fn := dbp.goSymTable.PCToLine(uint64(addr))
+	f, l, fn := dbp.symboltab.PCToLine(uint64(addr))
 	if fn == nil {
 		return nil, InvalidAddressError{address: addr}
 	}
@@ -100,7 +100,7 @@ func (dbp *Process) setBreakpoint(tid int, addr uint64, temp bool) (*Breakpoint,
 	}
 
 	thread := dbp.Threads[tid]
-	originalData, err := thread.readMemory(uintptr(addr), dbp.arch.BreakpointSize())
+	originalData, err := thread.Read(addr, dbp.arch.BreakpointSize())
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (dbp *Process) setBreakpoint(tid int, addr uint64, temp bool) (*Breakpoint,
 }
 
 func (dbp *Process) writeSoftwareBreakpoint(thread *Thread, addr uint64) error {
-	_, err := thread.writeMemory(uintptr(addr), dbp.arch.BreakpointInstruction())
+	_, err := thread.Write(addr, dbp.arch.BreakpointInstruction())
 	return err
 }
 

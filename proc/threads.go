@@ -26,6 +26,8 @@ type Thread struct {
 	BreakpointConditionMet   bool        // Output of evaluating the breakpoint's condition
 	BreakpointConditionError error       // Error evaluating the breakpoint's condition
 
+	Mem MemoryReadWriter
+
 	dbp            *Process
 	singleStepping bool
 	running        bool
@@ -40,6 +42,15 @@ type Location struct {
 	File string
 	Line int
 	Fn   *gosym.Func
+}
+
+func NewThread(tid int, p *Process) *Thread {
+	return &Thread{
+		ID:  tid,
+		Mem: newMemory(tid),
+		dbp: p,
+		os:  new(OSSpecificDetails),
+	}
 }
 
 // Continue the execution of this thread.
@@ -136,7 +147,7 @@ func (thread *Thread) setNextBreakpoints() (err error) {
 
 	// Grab info on our current stack frame. Used to determine
 	// whether we may be stepping outside of the current function.
-	fde, err := thread.dbp.frameEntries.FDEForPC(curpc)
+	fde, err := thread.dbp.dwarf.Frame.FDEForPC(curpc)
 	if err != nil {
 		return err
 	}
@@ -168,17 +179,17 @@ func (ge GoroutineExitingError) Error() string {
 // Set breakpoints at every line, and the return address. Also look for
 // a deferred function and set a breakpoint there too.
 func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file string, line int) error {
-	pcs := thread.dbp.lineInfo.AllPCsBetween(fde.Begin(), fde.End()-1, file)
+	pcs := thread.dbp.dwarf.Line.AllPCsBetween(fde.Begin(), fde.End()-1, file)
 
 	g, err := thread.GetG()
 	if err != nil {
 		return err
 	}
 	if g.DeferPC != 0 {
-		f, lineno, _ := thread.dbp.goSymTable.PCToLine(g.DeferPC)
+		f, lineno, _ := thread.dbp.symboltab.PCToLine(g.DeferPC)
 		for {
 			lineno++
-			dpc, _, err := thread.dbp.goSymTable.LineToPC(f, lineno)
+			dpc, _, err := thread.dbp.symboltab.LineToPC(f, lineno)
 			if err == nil {
 				// We want to avoid setting an actual breakpoint on the
 				// entry point of the deferred function so instead create
@@ -207,7 +218,7 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 	}
 
 	if !covered {
-		fn := thread.dbp.goSymTable.PCToFunc(ret)
+		fn := thread.dbp.symboltab.PCToFunc(ret)
 		if fn != nil && fn.Name == "runtime.goexit" {
 			g, err := thread.GetG()
 			if err != nil {
@@ -224,7 +235,7 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 // the benefit of an AST we can't be sure we're not at a branching statement and thus
 // cannot accurately predict where we may end up.
 func (thread *Thread) cnext(curpc uint64, fde *frame.FrameDescriptionEntry, file string) error {
-	pcs := thread.dbp.lineInfo.AllPCsBetween(fde.Begin(), fde.End(), file)
+	pcs := thread.dbp.dwarf.Line.AllPCsBetween(fde.Begin(), fde.End(), file)
 	ret, err := thread.ReturnAddress()
 	if err != nil {
 		return err
@@ -268,7 +279,7 @@ func (thread *Thread) getGVariable() (*Variable, error) {
 		return nil, fmt.Errorf("g struct offset not initialized")
 	}
 
-	gaddrbs, err := thread.readMemory(uintptr(regs.TLS()+thread.dbp.arch.GStructOffset()), thread.dbp.arch.PtrSize())
+	gaddrbs, err := thread.Read(uint64(regs.TLS()+thread.dbp.arch.GStructOffset()), thread.dbp.arch.PtrSize())
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +290,18 @@ func (thread *Thread) getGVariable() (*Variable, error) {
 	needsDeref := runtime.GOOS == "windows"
 
 	return thread.newGVariable(gaddr, needsDeref)
+}
+
+func (thread *Thread) Read(addr uint64, size int) ([]byte, error) {
+	return thread.Mem.Read(addr, size)
+}
+
+func (thread *Thread) Write(addr uint64, data []byte) (int, error) {
+	return thread.Mem.Write(addr, data)
+}
+
+func (thread *Thread) Swap(addr uint64, data []byte) ([]byte, error) {
+	return thread.Mem.Swap(addr, data)
 }
 
 func (thread *Thread) newGVariable(gaddr uintptr, deref bool) (*Variable, error) {

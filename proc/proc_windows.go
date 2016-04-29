@@ -13,12 +13,9 @@ import (
 	"syscall"
 	"unsafe"
 
-	"golang.org/x/debug/dwarf"
+	"github.com/derekparker/delve/proc/internal/mssys"
 
 	sys "golang.org/x/sys/windows"
-
-	"github.com/derekparker/delve/dwarf/frame"
-	"github.com/derekparker/delve/dwarf/line"
 )
 
 const (
@@ -148,7 +145,7 @@ func (dbp *Process) Kill() error {
 }
 
 func (dbp *Process) requestManualStop() error {
-	return _DebugBreakProcess(dbp.os.hProcess)
+	return mssys.DebugBreakProcess(dbp.os.hProcess)
 }
 
 func (dbp *Process) updateThreadList() error {
@@ -161,44 +158,13 @@ func (dbp *Process) addThread(hThread syscall.Handle, threadID int, attach bool)
 	if thread, ok := dbp.Threads[threadID]; ok {
 		return thread, nil
 	}
-	thread := &Thread{
-		ID:  threadID,
-		dbp: dbp,
-		os:  new(OSSpecificDetails),
-	}
+	thread := NewThread(threadID, dbp)
 	thread.os.hThread = hThread
 	dbp.Threads[threadID] = thread
 	if dbp.CurrentThread == nil {
 		dbp.SwitchThread(thread.ID)
 	}
 	return thread, nil
-}
-
-func (dbp *Process) parseDebugFrame(exe *pe.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	debugFrameSec := exe.Section(".debug_frame")
-	debugInfoSec := exe.Section(".debug_info")
-
-	if debugFrameSec != nil && debugInfoSec != nil {
-		debugFrame, err := debugFrameSec.Data()
-		if err != nil && uint32(len(debugFrame)) < debugFrameSec.Size {
-			fmt.Println("could not get .debug_frame section", err)
-			os.Exit(1)
-		}
-		if 0 < debugFrameSec.VirtualSize && debugFrameSec.VirtualSize < debugFrameSec.Size {
-			debugFrame = debugFrame[:debugFrameSec.VirtualSize]
-		}
-		dat, err := debugInfoSec.Data()
-		if err != nil {
-			fmt.Println("could not get .debug_info section", err)
-			os.Exit(1)
-		}
-		dbp.frameEntries = frame.Parse(debugFrame, frame.DwarfEndian(dat))
-	} else {
-		fmt.Println("could not find .debug_frame section in binary")
-		os.Exit(1)
-	}
 }
 
 // Borrowed from https://golang.org/src/cmd/internal/objfile/pe.go
@@ -287,82 +253,32 @@ func (dbp *Process) obtainGoSymbols(exe *pe.File, wg *sync.WaitGroup) {
 		os.Exit(1)
 	}
 
-	dbp.goSymTable = tab
+	dbp.symboltab = tab
 }
 
-func (dbp *Process) parseDebugLineInfo(exe *pe.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	if sec := exe.Section(".debug_line"); sec != nil {
-		debugLine, err := sec.Data()
-		if err != nil && uint32(len(debugLine)) < sec.Size {
-			fmt.Println("could not get .debug_line section", err)
-			os.Exit(1)
-		}
-		if 0 < sec.VirtualSize && sec.VirtualSize < sec.Size {
-			debugLine = debugLine[:sec.VirtualSize]
-		}
-		dbp.lineInfo = line.Parse(debugLine)
-	} else {
-		fmt.Println("could not find .debug_line section in binary")
-		os.Exit(1)
-	}
-}
-
-func (dbp *Process) findExecutable(path string) (*pe.File, error) {
+func (dbp *Process) findExecutable(path string) (string, *pe.File, error) {
 	if path == "" {
 		// TODO: Find executable path from PID/handle on Windows:
 		// https://msdn.microsoft.com/en-us/library/aa366789(VS.85).aspx
-		return nil, fmt.Errorf("not yet implemented")
+		return "", nil, fmt.Errorf("not yet implemented")
 	}
 	f, err := os.OpenFile(path, 0, os.ModePerm)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	peFile, err := pe.NewFile(f)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	dbp.dwarf, err = dwarfFromPE(peFile)
-	if err != nil {
-		return nil, err
-	}
-	return peFile, nil
-}
-
-// Adapted from src/debug/pe/file.go: pe.(*File).DWARF()
-func dwarfFromPE(f *pe.File) (*dwarf.Data, error) {
-	// There are many other DWARF sections, but these
-	// are the ones the debug/dwarf package uses.
-	// Don't bother loading others.
-	var names = [...]string{"abbrev", "info", "line", "str"}
-	var dat [len(names)][]byte
-	for i, name := range names {
-		name = ".debug_" + name
-		s := f.Section(name)
-		if s == nil {
-			continue
-		}
-		b, err := s.Data()
-		if err != nil && uint32(len(b)) < s.Size {
-			return nil, err
-		}
-		if 0 < s.VirtualSize && s.VirtualSize < s.Size {
-			b = b[:s.VirtualSize]
-		}
-		dat[i] = b
-	}
-
-	abbrev, info, line, str := dat[0], dat[1], dat[2], dat[3]
-	return dwarf.New(abbrev, nil, nil, info, line, nil, nil, str)
+	return path, peFile, nil
 }
 
 func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
-	var debugEvent _DEBUG_EVENT
+	var debugEvent mssys.DEBUG_EVENT
 	shouldExit := false
 	for {
 		// Wait for a debug event...
-		err := _WaitForDebugEvent(&debugEvent, syscall.INFINITE)
+		err := mssys.WaitForDebugEvent(&debugEvent, syscall.INFINITE)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -370,8 +286,8 @@ func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
 		// ... handle each event kind ...
 		unionPtr := unsafe.Pointer(&debugEvent.U[0])
 		switch debugEvent.DebugEventCode {
-		case _CREATE_PROCESS_DEBUG_EVENT:
-			debugInfo := (*_CREATE_PROCESS_DEBUG_INFO)(unionPtr)
+		case mssys.CREATE_PROCESS_DEBUG_EVENT:
+			debugInfo := (*mssys.CREATE_PROCESS_DEBUG_INFO)(unionPtr)
 			hFile := debugInfo.File
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
@@ -385,21 +301,21 @@ func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
 				return 0, 0, err
 			}
 			break
-		case _CREATE_THREAD_DEBUG_EVENT:
-			debugInfo := (*_CREATE_THREAD_DEBUG_INFO)(unionPtr)
+		case mssys.CREATE_THREAD_DEBUG_EVENT:
+			debugInfo := (*mssys.CREATE_THREAD_DEBUG_INFO)(unionPtr)
 			_, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
 			if err != nil {
 				return 0, 0, err
 			}
 			break
-		case _EXIT_THREAD_DEBUG_EVENT:
+		case mssys.EXIT_THREAD_DEBUG_EVENT:
 			delete(dbp.Threads, int(debugEvent.ThreadId))
 			break
-		case _OUTPUT_DEBUG_STRING_EVENT:
+		case mssys.OUTPUT_DEBUG_STRING_EVENT:
 			//TODO: Handle debug output strings
 			break
-		case _LOAD_DLL_DEBUG_EVENT:
-			debugInfo := (*_LOAD_DLL_DEBUG_INFO)(unionPtr)
+		case mssys.LOAD_DLL_DEBUG_EVENT:
+			debugInfo := (*mssys.LOAD_DLL_DEBUG_INFO)(unionPtr)
 			hFile := debugInfo.File
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
@@ -408,16 +324,16 @@ func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
 				}
 			}
 			break
-		case _UNLOAD_DLL_DEBUG_EVENT:
+		case mssys.UNLOAD_DLL_DEBUG_EVENT:
 			break
-		case _RIP_EVENT:
+		case mssys.RIP_EVENT:
 			break
-		case _EXCEPTION_DEBUG_EVENT:
+		case mssys.EXCEPTION_DEBUG_EVENT:
 			tid := int(debugEvent.ThreadId)
 			dbp.os.breakThread = tid
 			return tid, 0, nil
-		case _EXIT_PROCESS_DEBUG_EVENT:
-			debugInfo := (*_EXIT_PROCESS_DEBUG_INFO)(unionPtr)
+		case mssys.EXIT_PROCESS_DEBUG_EVENT:
+			debugInfo := (*mssys.EXIT_PROCESS_DEBUG_INFO)(unionPtr)
 			exitCode = int(debugInfo.ExitCode)
 			shouldExit = true
 		default:
@@ -425,7 +341,7 @@ func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
 		}
 
 		// .. and then continue unless we received an event that indicated we should break into debugger.
-		err = _ContinueDebugEvent(debugEvent.ProcessId, debugEvent.ThreadId, _DBG_CONTINUE)
+		err = mssys.ContinueDebugEvent(debugEvent.ProcessId, debugEvent.ThreadId, mssys.DBG_CONTINUE)
 		if err != nil {
 			return 0, 0, err
 		}

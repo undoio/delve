@@ -165,25 +165,25 @@ func (it *stackIterator) Err() error {
 
 func (dbp *Process) frameInfo(pc, sp uint64, top bool) (Stackframe, error) {
 	f, l, fn := dbp.PCToLine(pc)
-	fde, err := dbp.frameEntries.FDEForPC(pc)
+	fde, err := dbp.dwarf.Frame.FDEForPC(pc)
 	if err != nil {
 		return Stackframe{}, err
 	}
 	spoffset, retoffset := fde.ReturnAddressOffset(pc)
 	cfa := int64(sp) + spoffset
 
-	retaddr := uintptr(cfa + retoffset)
+	retaddr := uint64(cfa + retoffset)
 	if retaddr == 0 {
 		return Stackframe{}, NullAddrError{}
 	}
-	data, err := dbp.CurrentThread.readMemory(retaddr, dbp.arch.PtrSize())
+	data, err := dbp.CurrentThread.Read(retaddr, dbp.arch.PtrSize())
 	if err != nil {
 		return Stackframe{}, err
 	}
 	r := Stackframe{Current: Location{PC: pc, File: f, Line: l, Fn: fn}, CFA: cfa, Ret: binary.LittleEndian.Uint64(data)}
 	if !top {
 		r.Call.File, r.Call.Line, r.Call.Fn = dbp.PCToLine(pc - 1)
-		r.Call.PC, _, _ = dbp.goSymTable.LineToPC(r.Call.File, r.Call.Line)
+		r.Call.PC, _, _ = dbp.symboltab.LineToPC(r.Call.File, r.Call.Line)
 	} else {
 		r.Call = r.Current
 	}

@@ -3,6 +3,7 @@ package proc
 import (
 	"debug/gosym"
 	"encoding/binary"
+
 	"rsc.io/x86/x86asm"
 )
 
@@ -97,9 +98,9 @@ func (thread *Thread) resolveCallArg(inst *ArchInst, currentGoroutine bool, regs
 		if err1 != nil || err2 != nil {
 			return nil
 		}
-		addr := uintptr(int64(base) + int64(index*uint64(arg.Scale)) + arg.Disp)
+		addr := uint64(int64(base) + int64(index*uint64(arg.Scale)) + arg.Disp)
 		//TODO: should this always be 64 bits instead of inst.MemBytes?
-		pcbytes, err := thread.readMemory(addr, inst.MemBytes)
+		pcbytes, err := thread.Read(addr, inst.MemBytes)
 		if err != nil {
 			return nil
 		}

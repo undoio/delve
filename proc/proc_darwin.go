@@ -18,8 +18,6 @@ import (
 
 	"golang.org/x/debug/macho"
 
-	"github.com/derekparker/delve/dwarf/frame"
-	"github.com/derekparker/delve/dwarf/line"
 	sys "golang.org/x/sys/unix"
 )
 
@@ -63,7 +61,7 @@ func Launch(cmd []string) (*Process, error) {
 
 	dbp := New(0)
 	var pid int
-	execOnPtraceThread(func() {
+	OnPtraceThread(func() {
 		ret := C.fork_exec(argv0, &argvSlice[0], C.int(len(argvSlice)),
 			&dbp.os.task, &dbp.os.portSet, &dbp.os.exceptionPort,
 			&dbp.os.notificationPort)
@@ -205,41 +203,13 @@ func (dbp *Process) addThread(port int, attach bool) (*Thread, error) {
 	if thread, ok := dbp.Threads[port]; ok {
 		return thread, nil
 	}
-	thread := &Thread{
-		ID:  port,
-		dbp: dbp,
-		os:  new(OSSpecificDetails),
-	}
+	thread := NewThread(port, dbp)
 	dbp.Threads[port] = thread
 	thread.os.threadAct = C.thread_act_t(port)
 	if dbp.CurrentThread == nil {
 		dbp.SwitchThread(thread.ID)
 	}
 	return thread, nil
-}
-
-func (dbp *Process) parseDebugFrame(exe *macho.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	debugFrameSec := exe.Section("__debug_frame")
-	debugInfoSec := exe.Section("__debug_info")
-
-	if debugFrameSec != nil && debugInfoSec != nil {
-		debugFrame, err := exe.Section("__debug_frame").Data()
-		if err != nil {
-			fmt.Println("could not get __debug_frame section", err)
-			os.Exit(1)
-		}
-		dat, err := debugInfoSec.Data()
-		if err != nil {
-			fmt.Println("could not get .debug_info section", err)
-			os.Exit(1)
-		}
-		dbp.frameEntries = frame.Parse(debugFrame, frame.DwarfEndian(dat))
-	} else {
-		fmt.Println("could not find __debug_frame section in binary")
-		os.Exit(1)
-	}
 }
 
 func (dbp *Process) obtainGoSymbols(exe *macho.File, wg *sync.WaitGroup) {
@@ -274,38 +244,18 @@ func (dbp *Process) obtainGoSymbols(exe *macho.File, wg *sync.WaitGroup) {
 		os.Exit(1)
 	}
 
-	dbp.goSymTable = tab
+	dbp.symboltab = tab
 }
 
-func (dbp *Process) parseDebugLineInfo(exe *macho.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	if sec := exe.Section("__debug_line"); sec != nil {
-		debugLine, err := exe.Section("__debug_line").Data()
-		if err != nil {
-			fmt.Println("could not get __debug_line section", err)
-			os.Exit(1)
-		}
-		dbp.lineInfo = line.Parse(debugLine)
-	} else {
-		fmt.Println("could not find __debug_line section in binary")
-		os.Exit(1)
-	}
-}
-
-func (dbp *Process) findExecutable(path string) (*macho.File, error) {
+func (dbp *Process) findExecutable(path string) (string, *macho.File, error) {
 	if path == "" {
 		path = C.GoString(C.find_executable(C.int(dbp.Pid)))
 	}
 	exe, err := macho.Open(path)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	dbp.dwarf, err = exe.DWARF()
-	if err != nil {
-		return nil, err
-	}
-	return exe, nil
+	return path, exe, nil
 }
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {

@@ -45,7 +45,7 @@ func (t *Thread) resumeWithSig(sig int) (err error) {
 
 func (t *Thread) singleStep() (err error) {
 	for {
-		execOnPtraceThread(func() { err = sys.PtraceSingleStep(t.ID) })
+		err = PtraceSingleStep(t.ID)
 		if err != nil {
 			return err
 		}
@@ -69,7 +69,7 @@ func (t *Thread) singleStep() (err error) {
 
 func (t *Thread) blocked() bool {
 	pc, _ := t.PC()
-	fn := t.dbp.goSymTable.PCToFunc(pc)
+	fn := t.dbp.symboltab.PCToFunc(pc)
 	if fn != nil && ((fn.Name == "runtime.futex") || (fn.Name == "runtime.usleep") || (fn.Name == "runtime.clone")) {
 		return true
 	}
@@ -77,32 +77,13 @@ func (t *Thread) blocked() bool {
 }
 
 func (t *Thread) saveRegisters() (Registers, error) {
-	var err error
-	execOnPtraceThread(func() { err = sys.PtraceGetRegs(t.ID, &t.os.registers) })
+	err := PtraceGetRegs(t.ID, &t.os.registers)
 	if err != nil {
-		return nil, fmt.Errorf("could not save register contents")
+		return nil, fmt.Errorf("could not save register contents: %v", err)
 	}
 	return &Regs{&t.os.registers}, nil
 }
 
-func (t *Thread) restoreRegisters() (err error) {
-	execOnPtraceThread(func() { err = sys.PtraceSetRegs(t.ID, &t.os.registers) })
-	return
-}
-
-func (t *Thread) writeMemory(addr uintptr, data []byte) (written int, err error) {
-	if len(data) == 0 {
-		return
-	}
-	execOnPtraceThread(func() { written, err = sys.PtracePokeData(t.ID, addr, data) })
-	return
-}
-
-func (t *Thread) readMemory(addr uintptr, size int) (data []byte, err error) {
-	if size == 0 {
-		return
-	}
-	data = make([]byte, size)
-	execOnPtraceThread(func() { _, err = sys.PtracePeekData(t.ID, addr, data) })
-	return
+func (t *Thread) restoreRegisters() error {
+	return PtraceSetRegs(t.ID, &t.os.registers)
 }

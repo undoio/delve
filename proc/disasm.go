@@ -23,7 +23,7 @@ func (thread *Thread) Disassemble(startPC, endPC uint64, currentGoroutine bool) 
 	if thread.dbp.exited {
 		return nil, &ProcessExitedError{}
 	}
-	mem, err := thread.readMemory(uintptr(startPC), int(endPC-startPC))
+	mem, err := thread.Read(startPC, int(endPC-startPC))
 	if err != nil {
 		return nil, err
 	}

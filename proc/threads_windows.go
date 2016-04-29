@@ -3,6 +3,8 @@ package proc
 import (
 	"syscall"
 
+	"github.com/derekparker/delve/proc/internal/mssys"
+
 	sys "golang.org/x/sys/windows"
 )
 
@@ -27,17 +29,17 @@ func (t *Thread) halt() (err error) {
 
 func (t *Thread) singleStep() error {
 	context := newCONTEXT()
-	context.ContextFlags = _CONTEXT_ALL
+	context.ContextFlags = mssys.CONTEXT_ALL
 
 	// Set the processor TRAP flag
-	err := _GetThreadContext(t.os.hThread, context)
+	err := mssys.GetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
 
 	context.EFlags |= 0x100
 
-	err = _SetThreadContext(t.os.hThread, context)
+	err = mssys.SetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
@@ -47,13 +49,13 @@ func (t *Thread) singleStep() error {
 		if thread.ID == t.ID {
 			continue
 		}
-		_, _ = _SuspendThread(thread.os.hThread)
+		_, _ = mssys.SuspendThread(thread.os.hThread)
 	}
 
 	// Continue and wait for the step to complete
 	err = nil
 	execOnPtraceThread(func() {
-		err = _ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), _DBG_CONTINUE)
+		err = mssys.ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), mssys.DBG_CONTINUE)
 	})
 	if err != nil {
 		return err
@@ -68,18 +70,18 @@ func (t *Thread) singleStep() error {
 		if thread.ID == t.ID {
 			continue
 		}
-		_, _ = _ResumeThread(thread.os.hThread)
+		_, _ = mssys.ResumeThread(thread.os.hThread)
 	}
 
 	// Unset the processor TRAP flag
-	err = _GetThreadContext(t.os.hThread, context)
+	err = mssys.GetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
 
 	context.EFlags &= ^uint32(0x100)
 
-	return _SetThreadContext(t.os.hThread, context)
+	return mssys.SetThreadContext(t.os.hThread, context)
 }
 
 func (t *Thread) resume() error {
@@ -88,7 +90,7 @@ func (t *Thread) resume() error {
 	execOnPtraceThread(func() {
 		//TODO: Note that we are ignoring the thread we were asked to continue and are continuing the
 		//thread that we last broke on.
-		err = _ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), _DBG_CONTINUE)
+		err = mssys.ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), mssys.DBG_CONTINUE)
 	})
 	return err
 }
@@ -100,7 +102,7 @@ func (t *Thread) blocked() bool {
 	if err != nil {
 		return false
 	}
-	fn := t.dbp.goSymTable.PCToFunc(pc)
+	fn := t.dbp.symboltab.PCToFunc(pc)
 	if fn == nil {
 		return false
 	}
@@ -116,26 +118,4 @@ func (t *Thread) stopped() bool {
 	// TODO: We are assuming that threads are always stopped
 	// during command exection.
 	return true
-}
-
-func (t *Thread) writeMemory(addr uintptr, data []byte) (int, error) {
-	var count uintptr
-	err := _WriteProcessMemory(t.dbp.os.hProcess, addr, &data[0], uintptr(len(data)), &count)
-	if err != nil {
-		return 0, err
-	}
-	return int(count), nil
-}
-
-func (t *Thread) readMemory(addr uintptr, size int) ([]byte, error) {
-	if size == 0 {
-		return nil, nil
-	}
-	var count uintptr
-	buf := make([]byte, size)
-	err := _ReadProcessMemory(t.dbp.os.hProcess, addr, &buf[0], uintptr(size), &count)
-	if err != nil {
-		return nil, err
-	}
-	return buf[:count], nil
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"syscall"
-	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 )
@@ -108,7 +107,7 @@ func (t *Thread) blocked() bool {
 	if err != nil {
 		return false
 	}
-	fn := t.dbp.goSymTable.PCToFunc(pc)
+	fn := t.dbp.symboltab.PCToFunc(pc)
 	if fn == nil {
 		return false
 	}
@@ -122,37 +121,4 @@ func (t *Thread) blocked() bool {
 
 func (t *Thread) stopped() bool {
 	return C.thread_blocked(t.os.threadAct) > C.int(0)
-}
-
-func (t *Thread) writeMemory(addr uintptr, data []byte) (int, error) {
-	if len(data) == 0 {
-		return 0, nil
-	}
-	var (
-		vmData = unsafe.Pointer(&data[0])
-		vmAddr = C.mach_vm_address_t(addr)
-		length = C.mach_msg_type_number_t(len(data))
-	)
-	if ret := C.write_memory(t.dbp.os.task, vmAddr, vmData, length); ret < 0 {
-		return 0, fmt.Errorf("could not write memory")
-	}
-	return len(data), nil
-}
-
-func (t *Thread) readMemory(addr uintptr, size int) ([]byte, error) {
-	if size == 0 {
-		return nil, nil
-	}
-	var (
-		buf    = make([]byte, size)
-		vmData = unsafe.Pointer(&buf[0])
-		vmAddr = C.mach_vm_address_t(addr)
-		length = C.mach_msg_type_number_t(size)
-	)
-
-	ret := C.read_memory(t.dbp.os.task, vmAddr, vmData, length)
-	if ret < 0 {
-		return nil, fmt.Errorf("could not read memory")
-	}
-	return buf, nil
 }

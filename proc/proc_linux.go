@@ -17,9 +17,6 @@ import (
 	"golang.org/x/debug/elf"
 
 	sys "golang.org/x/sys/unix"
-
-	"github.com/derekparker/delve/pkg/dwarf/frame"
-	"github.com/derekparker/delve/pkg/dwarf/line"
 )
 
 // Process statuses
@@ -51,7 +48,7 @@ func Launch(cmd []string) (*Process, error) {
 		err  error
 	)
 	dbp := New(0)
-	execOnPtraceThread(func() {
+	OnPtraceThread(func() {
 		proc = exec.Command(cmd[0])
 		proc.Args = cmd
 		proc.Stdout = os.Stdout
@@ -106,7 +103,7 @@ func (dbp *Process) addThread(tid int, attach bool) (*Thread, error) {
 
 	var err error
 	if attach {
-		execOnPtraceThread(func() { err = sys.PtraceAttach(tid) })
+		err = PtraceAttach(tid)
 		if err != nil && err != sys.EPERM {
 			// Do not return err if err == EPERM,
 			// we may already be tracing this thread due to
@@ -123,12 +120,12 @@ func (dbp *Process) addThread(tid int, attach bool) (*Thread, error) {
 		}
 	}
 
-	execOnPtraceThread(func() { err = syscall.PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE) })
+	err = PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE)
 	if err == syscall.ESRCH {
 		if _, _, err = dbp.wait(tid, 0); err != nil {
 			return nil, fmt.Errorf("error while waiting after adding thread: %d %s", tid, err)
 		}
-		execOnPtraceThread(func() { err = syscall.PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE) })
+		err = PtraceSetOptions(tid, syscall.PTRACE_O_TRACECLONE)
 		if err == syscall.ESRCH {
 			return nil, err
 		}
@@ -137,11 +134,7 @@ func (dbp *Process) addThread(tid int, attach bool) (*Thread, error) {
 		}
 	}
 
-	dbp.Threads[tid] = &Thread{
-		ID:  tid,
-		dbp: dbp,
-		os:  new(OSSpecificDetails),
-	}
+	dbp.Threads[tid] = NewThread(tid, dbp)
 	if dbp.CurrentThread == nil {
 		dbp.SwitchThread(tid)
 	}
@@ -163,47 +156,19 @@ func (dbp *Process) updateThreadList() error {
 	return nil
 }
 
-func (dbp *Process) findExecutable(path string) (*elf.File, error) {
+func (dbp *Process) findExecutable(path string) (string, *elf.File, error) {
 	if path == "" {
 		path = fmt.Sprintf("/proc/%d/exe", dbp.Pid)
 	}
 	f, err := os.OpenFile(path, 0, os.ModePerm)
 	if err != nil {
-		return nil, err
+		return path, nil, err
 	}
 	elfFile, err := elf.NewFile(f)
 	if err != nil {
-		return nil, err
+		return path, nil, err
 	}
-	dbp.dwarf, err = elfFile.DWARF()
-	if err != nil {
-		return nil, err
-	}
-	return elfFile, nil
-}
-
-func (dbp *Process) parseDebugFrame(exe *elf.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	debugFrameSec := exe.Section(".debug_frame")
-	debugInfoSec := exe.Section(".debug_info")
-
-	if debugFrameSec != nil && debugInfoSec != nil {
-		debugFrame, err := exe.Section(".debug_frame").Data()
-		if err != nil {
-			fmt.Println("could not get .debug_frame section", err)
-			os.Exit(1)
-		}
-		dat, err := debugInfoSec.Data()
-		if err != nil {
-			fmt.Println("could not get .debug_info section", err)
-			os.Exit(1)
-		}
-		dbp.frameEntries = frame.Parse(debugFrame, frame.DwarfEndian(dat))
-	} else {
-		fmt.Println("could not find .debug_frame section in binary")
-		os.Exit(1)
-	}
+	return path, elfFile, nil
 }
 
 func (dbp *Process) obtainGoSymbols(exe *elf.File, wg *sync.WaitGroup) {
@@ -238,23 +203,7 @@ func (dbp *Process) obtainGoSymbols(exe *elf.File, wg *sync.WaitGroup) {
 		os.Exit(1)
 	}
 
-	dbp.goSymTable = tab
-}
-
-func (dbp *Process) parseDebugLineInfo(exe *elf.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	if sec := exe.Section(".debug_line"); sec != nil {
-		debugLine, err := exe.Section(".debug_line").Data()
-		if err != nil {
-			fmt.Println("could not get .debug_line section", err)
-			os.Exit(1)
-		}
-		dbp.lineInfo = line.Parse(debugLine)
-	} else {
-		fmt.Println("could not find .debug_line section in binary")
-		os.Exit(1)
-	}
+	dbp.symboltab = tab
 }
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
@@ -282,7 +231,7 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 			// A traced thread has cloned a new thread, grab the pid and
 			// add it to our list of traced threads.
 			var cloned uint
-			execOnPtraceThread(func() { cloned, err = sys.PtraceGetEventMsg(wpid) })
+			cloned, err = PtraceGetEventMsg(wpid)
 			if err != nil {
 				return nil, fmt.Errorf("could not get event message: %s", err)
 			}
