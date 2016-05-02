@@ -11,10 +11,6 @@ func init() {
 	go handlePtraceRequests()
 }
 
-func OnPtraceThread(fn func()) {
-	execOnPtraceThread(fn)
-}
-
 func handlePtraceRequests() {
 	// We must ensure here that we are running on the same thread during
 	// while invoking the ptrace(2) syscall. This is due to the fact that ptrace(2) expects

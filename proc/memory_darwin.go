@@ -8,7 +8,15 @@ import (
 	"unsafe"
 )
 
-func read(tid int, addr uint64, size int) ([]byte, error) {
+type memory struct {
+	id C.task_t
+}
+
+func newMemory(p *Process, tid int) *memory {
+	return &memory{id: p.os.task}
+}
+
+func read(tid C.task_t, addr uint64, size int) ([]byte, error) {
 	if size == 0 {
 		return nil, nil
 	}
@@ -20,13 +28,12 @@ func read(tid int, addr uint64, size int) ([]byte, error) {
 	)
 	ret := C.read_memory(C.task_t(tid), vmAddr, vmData, length)
 	if ret < 0 {
-		errStr := C.GoString(C.mach_error_string(C.mach_error_t(ret)))
-		return nil, fmt.Errorf("memory: could not read memory: %v", errStr)
+		return nil, fmt.Errorf("memory: could not read memory, code: %d", ret)
 	}
 	return buf, nil
 }
 
-func write(tid int, addr uint64, data []byte) (int, error) {
+func write(tid C.task_t, addr uint64, data []byte) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
@@ -36,8 +43,7 @@ func write(tid int, addr uint64, data []byte) (int, error) {
 		length = C.mach_msg_type_number_t(len(data))
 	)
 	if ret := C.write_memory(C.task_t(tid), vmAddr, vmData, length); ret < 0 {
-		errStr := C.GoString(C.mach_error_string(C.mach_error_t(ret)))
-		return 0, fmt.Errorf("memory: could not write memory %v", errStr)
+		return 0, fmt.Errorf("memory: could not write memory, code: %d", ret)
 	}
 	return len(data), nil
 }

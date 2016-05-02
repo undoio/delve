@@ -48,7 +48,7 @@ func Launch(cmd []string) (*Process, error) {
 		err  error
 	)
 	dbp := New(0)
-	OnPtraceThread(func() {
+	execOnPtraceThread(func() {
 		proc = exec.Command(cmd[0])
 		proc.Args = cmd
 		proc.Stdout = os.Stdout

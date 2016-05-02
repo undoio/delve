@@ -14,14 +14,14 @@ write_memory(task_t task, mach_vm_address_t addr, void *d, mach_msg_type_number_
 
 	// Set permissions to enable writting to this memory location
 	kret = mach_vm_protect(task, addr, len, FALSE, VM_PROT_WRITE|VM_PROT_COPY|VM_PROT_READ);
-	if (kret != KERN_SUCCESS) return -1;
+	if (kret != KERN_SUCCESS) return -2;
 
 	kret = mach_vm_write((vm_map_t)task, addr, (vm_offset_t)d, len);
-	if (kret != KERN_SUCCESS) return -1;
+	if (kret != KERN_SUCCESS) return -3;
 
 	// Restore virtual memory permissions
 	kret = mach_vm_protect(task, addr, len, FALSE, info.protection);
-	if (kret != KERN_SUCCESS) return -1;
+	if (kret != KERN_SUCCESS) return -4;
 
 	return 0;
 }
@@ -37,7 +37,7 @@ read_memory(task_t task, mach_vm_address_t addr, void *d, mach_msg_type_number_t
 	memcpy(d, (void *)data, len);
 
 	kret = vm_deallocate(task, data, len);
-	if (kret != KERN_SUCCESS) return -1;
+	if (kret != KERN_SUCCESS) return -2;
 
 	return count;
 }

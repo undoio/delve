@@ -6,6 +6,8 @@ import (
 
 	"debug/pe"
 
+	"golang.org/x/debug/dwarf"
+
 	"github.com/derekparker/delve/pkg/dwarf/frame"
 	"github.com/derekparker/delve/pkg/dwarf/line"
 )
@@ -44,7 +46,34 @@ func parseLine(exe *pe.File) (line.DebugLines, error) {
 		if 0 < sec.VirtualSize && sec.VirtualSize < sec.Size {
 			debugLine = debugLine[:sec.VirtualSize]
 		}
-		return line.Parse(debugLine)
+		return line.Parse(debugLine), nil
 	}
 	return nil, errors.New("dwarf: could not find .debug_line section in binary")
+}
+
+// Adapted from src/debug/pe/file.go: pe.(*File).DWARF()
+func parseDwarf(f *pe.File) (*dwarf.Data, error) {
+	// There are many other DWARF sections, but these
+	// are the ones the debug/dwarf package uses.
+	// Don't bother loading others.
+	var names = [...]string{"abbrev", "info", "line", "str"}
+	var dat [len(names)][]byte
+	for i, name := range names {
+		name = ".debug_" + name
+		s := f.Section(name)
+		if s == nil {
+			continue
+		}
+		b, err := s.Data()
+		if err != nil && uint32(len(b)) < s.Size {
+			return nil, err
+		}
+		if 0 < s.VirtualSize && s.VirtualSize < s.Size {
+			b = b[:s.VirtualSize]
+		}
+		dat[i] = b
+	}
+
+	abbrev, info, line, str := dat[0], dat[1], dat[2], dat[3]
+	return dwarf.New(abbrev, nil, nil, info, line, nil, nil, str)
 }

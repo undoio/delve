@@ -47,7 +47,7 @@ type Location struct {
 func NewThread(tid int, p *Process) *Thread {
 	return &Thread{
 		ID:  tid,
-		Mem: newMemory(tid),
+		Mem: newMemory(p, tid),
 		dbp: p,
 		os:  new(OSSpecificDetails),
 	}

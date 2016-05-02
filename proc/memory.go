@@ -8,28 +8,22 @@ type MemoryReadWriter interface {
 	Swap(uint64, []byte) ([]byte, error)
 }
 
-type memory struct {
-	tid int
-}
-
-func newMemory(tid int) *memory {
-	return &memory{tid: tid}
-}
+var _ MemoryReadWriter = &memory{}
 
 func (m *memory) Read(addr uint64, size int) ([]byte, error) {
-	return read(m.tid, addr, size)
+	return read(m.id, addr, size)
 }
 
 func (m *memory) Write(addr uint64, data []byte) (int, error) {
-	return write(m.tid, addr, data)
+	return write(m.id, addr, data)
 }
 
 func (m *memory) Swap(addr uint64, data []byte) ([]byte, error) {
-	originalData, err := read(m.tid, addr, len(data))
+	originalData, err := read(m.id, addr, len(data))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := write(m.tid, addr, data); err != nil {
+	if _, err := write(m.id, addr, data); err != nil {
 		return nil, err
 	}
 	return originalData, nil

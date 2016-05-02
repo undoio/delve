@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -32,6 +33,8 @@ func TestMain(m *testing.M) {
 
 func withTestProcess(name string, t testing.TB, fn func(p *Process, fixture protest.Fixture)) {
 	fixture := protest.BuildFixture(name)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.SetOutput(os.Stdout)
 	p, err := Launch([]string{fixture.Path})
 	if err != nil {
 		t.Fatal("Launch():", err)

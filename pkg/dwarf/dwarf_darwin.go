@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	gdwarf "golang.org/x/debug/dwarf"
+
 	"github.com/derekparker/delve/pkg/dwarf/frame"
 	"github.com/derekparker/delve/pkg/dwarf/line"
 	"golang.org/x/debug/macho"
@@ -11,6 +13,10 @@ import (
 
 func newExecutable(path string) (*macho.File, error) {
 	return macho.Open(path)
+}
+
+func parseDwarf(exe *macho.File) (*gdwarf.Data, error) {
+	return exe.DWARF()
 }
 
 func parseFrame(exe *macho.File) (frame.FrameDescriptionEntries, error) {

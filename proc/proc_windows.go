@@ -5,6 +5,7 @@ import (
 	"debug/pe"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +13,6 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
-
-	"github.com/derekparker/delve/proc/internal/mssys"
 
 	sys "golang.org/x/sys/windows"
 )
@@ -90,7 +89,9 @@ func Launch(cmd []string) (*Process, error) {
 	si.StdOutput = sys.Handle(fd[1])
 	si.StdErr = sys.Handle(fd[2])
 	pi := new(sys.ProcessInformation)
-	err = sys.CreateProcess(argv0, cmdLine, nil, nil, true, DEBUGONLYTHISPROCESS, nil, nil, si, pi)
+	execOnPtraceThread(func() {
+		err = sys.CreateProcess(argv0, cmdLine, nil, nil, true, DEBUGONLYTHISPROCESS, nil, nil, si, pi)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +114,8 @@ func Launch(cmd []string) (*Process, error) {
 		tid, exitCode, err = dbp.waitForDebugEvent()
 	})
 	if err != nil {
+		log.Printf("waitForDebugEvent error: %v\n", err)
+		fmt.Println("")
 		return nil, err
 	}
 	if tid == 0 {
@@ -120,6 +123,7 @@ func Launch(cmd []string) (*Process, error) {
 		return nil, ProcessExitedError{Pid: dbp.Pid, Status: exitCode}
 	}
 
+	fmt.Println("init debug process")
 	return initializeDebugProcess(dbp, argv0Go, false)
 }
 
@@ -145,7 +149,7 @@ func (dbp *Process) Kill() error {
 }
 
 func (dbp *Process) requestManualStop() error {
-	return mssys.DebugBreakProcess(dbp.os.hProcess)
+	return _DebugBreakProcess(dbp.os.hProcess)
 }
 
 func (dbp *Process) updateThreadList() error {
@@ -274,75 +278,83 @@ func (dbp *Process) findExecutable(path string) (string, *pe.File, error) {
 }
 
 func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
-	var debugEvent mssys.DEBUG_EVENT
+	var debugEvent _DEBUG_EVENT
 	shouldExit := false
 	for {
 		// Wait for a debug event...
-		err := mssys.WaitForDebugEvent(&debugEvent, syscall.INFINITE)
+		err := _WaitForDebugEvent(&debugEvent, syscall.INFINITE)
 		if err != nil {
+			log.Printf("waitForDebugEvent: unexpected error: %v\n", err)
 			return 0, 0, err
 		}
 
 		// ... handle each event kind ...
 		unionPtr := unsafe.Pointer(&debugEvent.U[0])
 		switch debugEvent.DebugEventCode {
-		case mssys.CREATE_PROCESS_DEBUG_EVENT:
-			debugInfo := (*mssys.CREATE_PROCESS_DEBUG_INFO)(unionPtr)
+		case _CREATE_PROCESS_DEBUG_EVENT:
+			debugInfo := (*_CREATE_PROCESS_DEBUG_INFO)(unionPtr)
 			hFile := debugInfo.File
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
 				if err != nil {
+					log.Printf("waitForDebugEvent: CREATE_PROCESS_DEBUG_EVENT unexpected error: %v\n", err)
 					return 0, 0, err
 				}
 			}
 			dbp.os.hProcess = debugInfo.Process
+			for _, th := range dbp.Threads {
+				th.Mem.(*memory).id = dbp.os.hProcess
+			}
 			_, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
 			if err != nil {
 				return 0, 0, err
 			}
 			break
-		case mssys.CREATE_THREAD_DEBUG_EVENT:
-			debugInfo := (*mssys.CREATE_THREAD_DEBUG_INFO)(unionPtr)
+		case _CREATE_THREAD_DEBUG_EVENT:
+			debugInfo := (*_CREATE_THREAD_DEBUG_INFO)(unionPtr)
 			_, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
 			if err != nil {
+				log.Printf("waitForDebugEvent: CREATE_THREAD_DEBUG_EVENT unexpected error: %v\n", err)
 				return 0, 0, err
 			}
 			break
-		case mssys.EXIT_THREAD_DEBUG_EVENT:
+		case _EXIT_THREAD_DEBUG_EVENT:
 			delete(dbp.Threads, int(debugEvent.ThreadId))
 			break
-		case mssys.OUTPUT_DEBUG_STRING_EVENT:
+		case _OUTPUT_DEBUG_STRING_EVENT:
 			//TODO: Handle debug output strings
 			break
-		case mssys.LOAD_DLL_DEBUG_EVENT:
-			debugInfo := (*mssys.LOAD_DLL_DEBUG_INFO)(unionPtr)
+		case _LOAD_DLL_DEBUG_EVENT:
+			debugInfo := (*_LOAD_DLL_DEBUG_INFO)(unionPtr)
 			hFile := debugInfo.File
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
 				if err != nil {
+					log.Printf("waitForDebugEvent: LOAD_DLL_DEBUG_EVENT unexpected error: %v\n", err)
 					return 0, 0, err
 				}
 			}
 			break
-		case mssys.UNLOAD_DLL_DEBUG_EVENT:
+		case _UNLOAD_DLL_DEBUG_EVENT:
 			break
-		case mssys.RIP_EVENT:
+		case _RIP_EVENT:
 			break
-		case mssys.EXCEPTION_DEBUG_EVENT:
+		case _EXCEPTION_DEBUG_EVENT:
 			tid := int(debugEvent.ThreadId)
 			dbp.os.breakThread = tid
 			return tid, 0, nil
-		case mssys.EXIT_PROCESS_DEBUG_EVENT:
-			debugInfo := (*mssys.EXIT_PROCESS_DEBUG_INFO)(unionPtr)
+		case _EXIT_PROCESS_DEBUG_EVENT:
+			debugInfo := (*_EXIT_PROCESS_DEBUG_INFO)(unionPtr)
 			exitCode = int(debugInfo.ExitCode)
 			shouldExit = true
 		default:
-			return 0, 0, fmt.Errorf("unknown debug event code: %d", debugEvent.DebugEventCode)
+			return 0, 0, fmt.Errorf("unknown debug event code: %d\n", debugEvent.DebugEventCode)
 		}
 
 		// .. and then continue unless we received an event that indicated we should break into debugger.
-		err = mssys.ContinueDebugEvent(debugEvent.ProcessId, debugEvent.ThreadId, mssys.DBG_CONTINUE)
+		err = _ContinueDebugEvent(debugEvent.ProcessId, debugEvent.ThreadId, _DBG_CONTINUE)
 		if err != nil {
+			log.Printf("waitForDebugEvent: ContinueDebugEvent unexpected error: %v\n", err)
 			return 0, 0, err
 		}
 
@@ -415,6 +427,5 @@ func (dbp *Process) resume() error {
 }
 
 func killProcess(pid int) error {
-	fmt.Println("killProcess")
 	return fmt.Errorf("not implemented: killProcess")
 }

@@ -1,28 +1,28 @@
-package mssys
+package proc
 
 import "unsafe"
 
 const (
-	CONTEXT_AMD64               = 0x100000
-	CONTEXT_CONTROL             = (CONTEXT_AMD64 | 0x1)
-	CONTEXT_INTEGER             = (CONTEXT_AMD64 | 0x2)
-	CONTEXT_SEGMENTS            = (CONTEXT_AMD64 | 0x4)
-	CONTEXT_FLOATING_POINT      = (CONTEXT_AMD64 | 0x8)
-	CONTEXT_DEBUG_REGISTERS     = (CONTEXT_AMD64 | 0x10)
-	CONTEXT_FULL                = (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT)
-	CONTEXT_ALL                 = (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS | CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS)
-	CONTEXT_EXCEPTION_ACTIVE    = 0x8000000
-	CONTEXT_SERVICE_ACTIVE      = 0x10000000
-	CONTEXT_EXCEPTION_REQUEST   = 0x40000000
-	CONTEXT_EXCEPTION_REPORTING = 0x80000000
+	_CONTEXT_AMD64               = 0x100000
+	_CONTEXT_CONTROL             = (_CONTEXT_AMD64 | 0x1)
+	_CONTEXT_INTEGER             = (_CONTEXT_AMD64 | 0x2)
+	_CONTEXT_SEGMENTS            = (_CONTEXT_AMD64 | 0x4)
+	_CONTEXT_FLOATING_POINT      = (_CONTEXT_AMD64 | 0x8)
+	_CONTEXT_DEBUG_REGISTERS     = (_CONTEXT_AMD64 | 0x10)
+	_CONTEXT_FULL                = (_CONTEXT_CONTROL | _CONTEXT_INTEGER | _CONTEXT_FLOATING_POINT)
+	_CONTEXT_ALL                 = (_CONTEXT_CONTROL | _CONTEXT_INTEGER | _CONTEXT_SEGMENTS | _CONTEXT_FLOATING_POINT | _CONTEXT_DEBUG_REGISTERS)
+	_CONTEXT_EXCEPTION_ACTIVE    = 0x8000000
+	_CONTEXT_SERVICE_ACTIVE      = 0x10000000
+	_CONTEXT_EXCEPTION_REQUEST   = 0x40000000
+	_CONTEXT_EXCEPTION_REPORTING = 0x80000000
 )
 
-type M128A struct {
+type _M128A struct {
 	Low  uint64
 	High int64
 }
 
-type CONTEXT struct {
+type _CONTEXT struct {
 	P1Home uint64
 	P2Home uint64
 	P3Home uint64
@@ -69,7 +69,7 @@ type CONTEXT struct {
 
 	FltSave [512]byte
 
-	VectorRegister [26]M128A
+	VectorRegister [26]_M128A
 	VectorControl  uint64
 
 	DebugControl         uint64
@@ -80,13 +80,13 @@ type CONTEXT struct {
 }
 
 // newCONTEXT allocates Windows CONTEXT structure aligned to 16 bytes.
-func newCONTEXT() *CONTEXT {
-	var c *CONTEXT
+func newCONTEXT() *_CONTEXT {
+	var c *_CONTEXT
 	buf := make([]byte, unsafe.Sizeof(*c)+15)
-	return (*CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
+	return (*_CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
 }
 
-type DEBUG_EVENT struct {
+type _DEBUG_EVENT struct {
 	DebugEventCode uint32
 	ProcessId      uint32
 	ThreadId       uint32

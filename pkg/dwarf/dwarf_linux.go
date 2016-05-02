@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	gdwarf "golang.org/x/debug/dwarf"
 	"golang.org/x/debug/elf"
 
 	"github.com/derekparker/delve/pkg/dwarf/frame"
@@ -12,6 +13,10 @@ import (
 
 func newExecutable(path string) (*elf.File, error) {
 	return elf.Open(path)
+}
+
+func parseDwarf(exe *elf.File) (*gdwarf.Data, error) {
+	return exe.DWARF()
 }
 
 func parseFrame(exe *elf.File) (frame.FrameDescriptionEntries, error) {

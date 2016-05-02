@@ -420,7 +420,7 @@ func (dbp *Process) pickCurrentThread(trapthread *Thread) error {
 			return dbp.SwitchThread(th.ID)
 		}
 	}
-	if trapthread.onTriggeredBreakpoint() {
+	if trapthread != nil && trapthread.onTriggeredBreakpoint() {
 		return dbp.SwitchThread(trapthread.ID)
 	}
 	for _, th := range dbp.Threads {

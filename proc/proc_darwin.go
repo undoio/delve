@@ -61,7 +61,7 @@ func Launch(cmd []string) (*Process, error) {
 
 	dbp := New(0)
 	var pid int
-	OnPtraceThread(func() {
+	execOnPtraceThread(func() {
 		ret := C.fork_exec(argv0, &argvSlice[0], C.int(len(argvSlice)),
 			&dbp.os.task, &dbp.os.portSet, &dbp.os.exceptionPort,
 			&dbp.os.notificationPort)
@@ -81,6 +81,7 @@ func Launch(cmd []string) (*Process, error) {
 	if port == 0 {
 		return nil, errors.New("error while waiting for process to exec")
 	}
+	dbp.Halt()
 	dbp, err = initializeDebugProcess(dbp, argv0Go, false)
 	if err != nil {
 		return dbp, err

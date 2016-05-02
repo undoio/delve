@@ -1,23 +1,31 @@
 package proc
 
-import "github.com/derekparker/delve/proc/internal/mssys"
+import "syscall"
 
-func read(tid int, addr uint64, size int) ([]byte, error) {
+type memory struct {
+	id syscall.Handle
+}
+
+func newMemory(p *Process, tid int) *memory {
+	return &memory{id: p.os.hProcess}
+}
+
+func read(tid syscall.Handle, addr uint64, size int) ([]byte, error) {
 	if size == 0 {
 		return nil, nil
 	}
 	var count uintptr
 	buf := make([]byte, size)
-	err := mssys.ReadProcessMemory(t.dbp.os.hProcess, addr, &buf[0], uintptr(size), &count)
+	err := _ReadProcessMemory(tid, uintptr(addr), &buf[0], uintptr(size), &count)
 	if err != nil {
 		return nil, err
 	}
 	return buf[:count], nil
 }
 
-func write(tid int, addr uint64, data []byte) (int, error) {
+func write(tid syscall.Handle, addr uint64, data []byte) (int, error) {
 	var count uintptr
-	err := mssys.WriteProcessMemory(t.dbp.os.hProcess, addr, &data[0], uintptr(len(data)), &count)
+	err := _WriteProcessMemory(tid, uintptr(addr), &data[0], uintptr(len(data)), &count)
 	if err != nil {
 		return 0, err
 	}

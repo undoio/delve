@@ -1,5 +1,13 @@
 package proc
 
+type memory struct {
+	id int
+}
+
+func newMemory(p *Process, tid int) *memory {
+	return &memory{id: tid}
+}
+
 func read(tid int, addr uint64, size int) ([]byte, error) {
 	if size == 0 {
 		return []byte{}, nil

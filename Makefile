@@ -59,14 +59,14 @@ ifeq "$(TRAVIS)" "true"
 ifdef DARWIN
 	sudo -E go test -v $(ALL_PACKAGES)
 else
-	go test $(TEST_FLAGS) $(BUILD_FLAGS) $(ALL_PACKAGES)
+	go test -v $(TEST_FLAGS) $(BUILD_FLAGS) $(ALL_PACKAGES)
 endif
 else
-	go test $(TEST_FLAGS) $(BUILD_FLAGS) $(ALL_PACKAGES)
+	go test -v $(TEST_FLAGS) $(BUILD_FLAGS) $(ALL_PACKAGES)
 endif
 
 test-proc-run:
-	go test $(TEST_FLAGS) $(BUILD_FLAGS) -test.run="$(RUN)" $(PREFIX)/proc
+	go test -test.v $(TEST_FLAGS) $(BUILD_FLAGS) -test.run="$(RUN)" $(PREFIX)/proc
 
 test-integration-run:
-	go test $(TEST_FLAGS) $(BUILD_FLAGS) -test.run="$(RUN)" $(PREFIX)/service/test
+	go test -test.v $(TEST_FLAGS) $(BUILD_FLAGS) -test.run="$(RUN)" $(PREFIX)/service/test

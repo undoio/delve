@@ -3,8 +3,6 @@ package proc
 import (
 	"syscall"
 
-	"github.com/derekparker/delve/proc/internal/mssys"
-
 	sys "golang.org/x/sys/windows"
 )
 
@@ -29,17 +27,17 @@ func (t *Thread) halt() (err error) {
 
 func (t *Thread) singleStep() error {
 	context := newCONTEXT()
-	context.ContextFlags = mssys.CONTEXT_ALL
+	context.ContextFlags = _CONTEXT_ALL
 
 	// Set the processor TRAP flag
-	err := mssys.GetThreadContext(t.os.hThread, context)
+	err := _GetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
 
 	context.EFlags |= 0x100
 
-	err = mssys.SetThreadContext(t.os.hThread, context)
+	err = _SetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
@@ -49,13 +47,13 @@ func (t *Thread) singleStep() error {
 		if thread.ID == t.ID {
 			continue
 		}
-		_, _ = mssys.SuspendThread(thread.os.hThread)
+		_, _ = _SuspendThread(thread.os.hThread)
 	}
 
 	// Continue and wait for the step to complete
 	err = nil
 	execOnPtraceThread(func() {
-		err = mssys.ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), mssys.DBG_CONTINUE)
+		err = _ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), _DBG_CONTINUE)
 	})
 	if err != nil {
 		return err
@@ -70,18 +68,18 @@ func (t *Thread) singleStep() error {
 		if thread.ID == t.ID {
 			continue
 		}
-		_, _ = mssys.ResumeThread(thread.os.hThread)
+		_, _ = _ResumeThread(thread.os.hThread)
 	}
 
 	// Unset the processor TRAP flag
-	err = mssys.GetThreadContext(t.os.hThread, context)
+	err = _GetThreadContext(t.os.hThread, context)
 	if err != nil {
 		return err
 	}
 
 	context.EFlags &= ^uint32(0x100)
 
-	return mssys.SetThreadContext(t.os.hThread, context)
+	return _SetThreadContext(t.os.hThread, context)
 }
 
 func (t *Thread) resume() error {
@@ -90,7 +88,7 @@ func (t *Thread) resume() error {
 	execOnPtraceThread(func() {
 		//TODO: Note that we are ignoring the thread we were asked to continue and are continuing the
 		//thread that we last broke on.
-		err = mssys.ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), mssys.DBG_CONTINUE)
+		err = _ContinueDebugEvent(uint32(t.dbp.Pid), uint32(t.ID), _DBG_CONTINUE)
 	})
 	return err
 }
