@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"log"
 	"reflect"
 )
 
@@ -72,6 +73,7 @@ func (iae InvalidAddressError) Error() string {
 }
 
 func (dbp *Process) setBreakpoint(tid int, addr uint64, temp bool) (*Breakpoint, error) {
+	log.Printf("setBreakpoint(%d, %#v, %v)\n", tid, addr, temp)
 	if bp, ok := dbp.FindBreakpoint(addr); ok {
 		return nil, BreakpointExistsError{bp.File, bp.Line, bp.Addr}
 	}

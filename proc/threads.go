@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -93,6 +94,7 @@ func (thread *Thread) StepInstruction() (err error) {
 
 	bp, ok := thread.dbp.FindBreakpoint(pc)
 	if ok {
+		log.Println("stepping over breakpoint")
 		// Clear the breakpoint so that we can continue execution.
 		_, err = bp.Clear(thread)
 		if err != nil {
@@ -245,12 +247,17 @@ func (thread *Thread) cnext(curpc uint64, fde *frame.FrameDescriptionEntry, file
 }
 
 func (thread *Thread) setNextTempBreakpoints(curpc uint64, pcs []uint64) error {
+	fmt.Printf("%#v\n", pcs)
+	f, l, _ := thread.dbp.PCToLine(curpc)
 	for i := range pcs {
-		if pcs[i] == curpc || pcs[i] == curpc-1 {
+		if ff, ll, _ := thread.dbp.PCToLine(pcs[i]); f == ff && l == ll {
+			fmt.Println("ccconnnnnnnntinue ------------")
 			continue
 		}
 		if _, err := thread.dbp.SetTempBreakpoint(pcs[i]); err != nil {
-			if _, ok := err.(BreakpointExistsError); !ok {
+			switch err.(type) {
+			case BreakpointExistsError: // noop
+			default:
 				return err
 			}
 		}
