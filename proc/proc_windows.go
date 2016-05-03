@@ -114,8 +114,6 @@ func Launch(cmd []string) (*Process, error) {
 		tid, exitCode, err = dbp.waitForDebugEvent()
 	})
 	if err != nil {
-		log.Printf("waitForDebugEvent error: %v\n", err)
-		fmt.Println("")
 		return nil, err
 	}
 	if tid == 0 {
@@ -123,7 +121,6 @@ func Launch(cmd []string) (*Process, error) {
 		return nil, ProcessExitedError{Pid: dbp.Pid, Status: exitCode}
 	}
 
-	fmt.Println("init debug process")
 	return initializeDebugProcess(dbp, argv0Go, false)
 }
 
