@@ -41,16 +41,14 @@ type Process struct {
 	// Normally SelectedGoroutine is CurrentThread.GetG, it will not be only if SwitchGoroutine is called with a goroutine that isn't attached to a thread
 	SelectedGoroutine *G
 
-	allGCache               []*G
-	dwarf                   *pdwarf.Dwarf
-	symboltab               *gosym.Table
-	os                      *OSProcessDetails
-	arch                    Arch
-	breakpointIDCounter     int
-	tempBreakpointIDCounter int
-	firstStart              bool
-	halt                    bool
-	exited                  bool
+	allGCache  []*G
+	dwarf      *pdwarf.Dwarf
+	symboltab  *gosym.Table
+	os         *OSProcessDetails
+	arch       Arch
+	firstStart bool
+	halt       bool
+	exited     bool
 }
 
 // New returns an initialized Process struct.
@@ -740,7 +738,7 @@ func initializeDebugProcess(dbp *Process, path string, attach bool) (*Process, e
 		if err == nil {
 			bp.Name = "unrecovered-panic"
 			bp.ID = -1
-			dbp.breakpointIDCounter--
+			breakpointIDCounter--
 		}
 	}
 
