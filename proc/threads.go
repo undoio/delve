@@ -251,7 +251,6 @@ func (thread *Thread) setNextTempBreakpoints(curpc uint64, pcs []uint64) error {
 	f, l, _ := thread.dbp.PCToLine(curpc)
 	for i := range pcs {
 		if ff, ll, _ := thread.dbp.PCToLine(pcs[i]); f == ff && l == ll {
-			fmt.Println("ccconnnnnnnntinue ------------")
 			continue
 		}
 		if _, err := thread.dbp.SetTempBreakpoint(pcs[i]); err != nil {
