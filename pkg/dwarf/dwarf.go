@@ -85,6 +85,7 @@ func loadTypes(rdr *reader.Reader) map[string]dwarf.Offset {
 
 func loadPackages(rdr *reader.Reader) map[string]string {
 	packages := map[string]string{}
+	rdr.Seek(0)
 	for entry, err := rdr.Next(); entry != nil; entry, err = rdr.Next() {
 		if err != nil {
 			// TODO(derekparker) do not panic here
