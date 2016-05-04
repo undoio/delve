@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"debug/gosym"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -10,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -171,41 +169,6 @@ func (dbp *Process) findExecutable(path string) (string, *elf.File, error) {
 	return path, elfFile, nil
 }
 
-func (dbp *Process) obtainGoSymbols(exe *elf.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	var (
-		symdat  []byte
-		pclndat []byte
-		err     error
-	)
-
-	if sec := exe.Section(".gosymtab"); sec != nil {
-		symdat, err = sec.Data()
-		if err != nil {
-			fmt.Println("could not get .gosymtab section", err)
-			os.Exit(1)
-		}
-	}
-
-	if sec := exe.Section(".gopclntab"); sec != nil {
-		pclndat, err = sec.Data()
-		if err != nil {
-			fmt.Println("could not get .gopclntab section", err)
-			os.Exit(1)
-		}
-	}
-
-	pcln := gosym.NewLineTable(pclndat, exe.Section(".text").Addr)
-	tab, err := gosym.NewTable(symdat, pcln)
-	if err != nil {
-		fmt.Println("could not get initialize line table", err)
-		os.Exit(1)
-	}
-
-	dbp.symboltab = tab
-}
-
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	for {
 		wpid, status, err := dbp.wait(pid, 0)
@@ -283,9 +246,7 @@ func (dbp *Process) trapWait(pid int) (*Thread, error) {
 	}
 }
 
-func (dbp *Process) loadProcessInformation(wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func (dbp *Process) loadProcessInformation() {
 	comm, err := ioutil.ReadFile(fmt.Sprintf("/proc/%d/comm", dbp.Pid))
 	if err != nil {
 		fmt.Printf("Could not read process comm name: %v\n", err)

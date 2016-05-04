@@ -107,7 +107,7 @@ func (t *Thread) blocked() bool {
 	if err != nil {
 		return false
 	}
-	fn := t.dbp.symboltab.PCToFunc(pc)
+	fn := t.dbp.dwarf.PCToFunc(pc)
 	if fn == nil {
 		return false
 	}

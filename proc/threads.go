@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"debug/gosym"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +12,9 @@ import (
 	"golang.org/x/debug/dwarf"
 
 	"github.com/derekparker/delve/pkg/dwarf/frame"
+	"github.com/derekparker/delve/pkg/location"
+	"github.com/derekparker/delve/pkg/memory"
+	"github.com/derekparker/delve/pkg/stack"
 )
 
 // Thread represents a single thread in the traced process
@@ -27,22 +29,12 @@ type Thread struct {
 	BreakpointConditionMet   bool        // Output of evaluating the breakpoint's condition
 	BreakpointConditionError error       // Error evaluating the breakpoint's condition
 
-	Mem MemoryReadWriter
+	Mem memory.ReadWriter
 
 	dbp            *Process
 	singleStepping bool
 	running        bool
 	os             *OSSpecificDetails
-}
-
-// Location represents the location of a thread.
-// Holds information on the current instruction
-// address, the source file:line, and the function.
-type Location struct {
-	PC   uint64
-	File string
-	Line int
-	Fn   *gosym.Func
 }
 
 func NewThread(tid int, p *Process) *Thread {
@@ -120,13 +112,14 @@ func (thread *Thread) StepInstruction() (err error) {
 // Location returns the threads location, including the file:line
 // of the corresponding source code, the function we're in
 // and the current instruction address.
-func (thread *Thread) Location() (*Location, error) {
+func (thread *Thread) Location() (*location.Location, error) {
 	pc, err := thread.PC()
 	if err != nil {
 		return nil, err
 	}
-	f, l, fn := thread.dbp.PCToLine(pc)
-	return &Location{PC: pc, File: f, Line: l, Fn: fn}, nil
+	f, l, fn := thread.dbp.dwarf.PCToLine(pc)
+	ll := location.New(pc, f, l, fn)
+	return &ll, nil
 }
 
 // ThreadBlockedError is returned when the thread
@@ -188,10 +181,10 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 		return err
 	}
 	if g.DeferPC != 0 {
-		f, lineno, _ := thread.dbp.symboltab.PCToLine(g.DeferPC)
+		f, lineno, _ := thread.dbp.dwarf.PCToLine(g.DeferPC)
 		for {
 			lineno++
-			dpc, _, err := thread.dbp.symboltab.LineToPC(f, lineno)
+			dpc, _, err := thread.dbp.dwarf.LineToPC(f, lineno)
 			if err == nil {
 				// We want to avoid setting an actual breakpoint on the
 				// entry point of the deferred function so instead create
@@ -206,7 +199,11 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 		}
 	}
 
-	ret, err := thread.ReturnAddress()
+	regs, err := thread.Registers()
+	if err != nil {
+		return err
+	}
+	ret, err := stack.ReturnAddress(regs.PC(), regs.SP(), thread.dbp.dwarf, thread.Mem)
 	if err != nil {
 		return err
 	}
@@ -220,7 +217,7 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 	}
 
 	if !covered {
-		fn := thread.dbp.symboltab.PCToFunc(ret)
+		fn := thread.dbp.dwarf.PCToFunc(ret)
 		if fn != nil && fn.Name == "runtime.goexit" {
 			g, err := thread.GetG()
 			if err != nil {
@@ -238,7 +235,11 @@ func (thread *Thread) next(curpc uint64, fde *frame.FrameDescriptionEntry, file 
 // cannot accurately predict where we may end up.
 func (thread *Thread) cnext(curpc uint64, fde *frame.FrameDescriptionEntry, file string) error {
 	pcs := thread.dbp.dwarf.Line.AllPCsBetween(fde.Begin(), fde.End(), file)
-	ret, err := thread.ReturnAddress()
+	regs, err := thread.Registers()
+	if err != nil {
+		return err
+	}
+	ret, err := stack.ReturnAddress(regs.PC(), regs.SP(), thread.dbp.dwarf, thread.Mem)
 	if err != nil {
 		return err
 	}
@@ -247,9 +248,9 @@ func (thread *Thread) cnext(curpc uint64, fde *frame.FrameDescriptionEntry, file
 }
 
 func (thread *Thread) setNextTempBreakpoints(curpc uint64, pcs []uint64) error {
-	f, l, _ := thread.dbp.PCToLine(curpc)
+	f, l, _ := thread.dbp.dwarf.PCToLine(curpc)
 	for i := range pcs {
-		if ff, ll, _ := thread.dbp.PCToLine(pcs[i]); f == ff && l == ll {
+		if ff, ll, _ := thread.dbp.dwarf.PCToLine(pcs[i]); f == ff && l == ll {
 			continue
 		}
 		if _, err := thread.dbp.SetTempBreakpoint(pcs[i]); err != nil {
@@ -378,14 +379,18 @@ func (thread *Thread) Halt() (err error) {
 
 // Scope returns the current EvalScope for this thread.
 func (thread *Thread) Scope() (*EvalScope, error) {
-	locations, err := thread.Stacktrace(0)
+	regs, err := thread.Registers()
+	if err != nil {
+		return nil, err
+	}
+	locations, err := stack.Trace(0, regs.PC(), regs.SP(), thread.dbp.dwarf, thread.Mem)
 	if err != nil {
 		return nil, err
 	}
 	if len(locations) < 1 {
 		return nil, errors.New("could not decode first frame")
 	}
-	return locations[0].Scope(thread), nil
+	return &EvalScope{Thread: thread, PC: locations[0].Current.PC, CFA: locations[0].CFA, dwarf: thread.dbp.dwarf}, nil
 }
 
 // SetCurrentBreakpoint sets the current breakpoint that this

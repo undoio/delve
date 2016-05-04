@@ -17,8 +17,12 @@ import (
 
 	"golang.org/x/debug/dwarf"
 
+	"github.com/derekparker/delve/pkg/arch"
 	pdwarf "github.com/derekparker/delve/pkg/dwarf"
 	"github.com/derekparker/delve/pkg/dwarf/reader"
+	"github.com/derekparker/delve/pkg/goversion"
+	"github.com/derekparker/delve/pkg/location"
+	"github.com/derekparker/delve/pkg/stack"
 )
 
 // Process represents all of the information the debugger
@@ -43,9 +47,8 @@ type Process struct {
 
 	allGCache  []*G
 	dwarf      *pdwarf.Dwarf
-	symboltab  *gosym.Table
 	os         *OSProcessDetails
-	arch       Arch
+	arch       arch.Arch
 	firstStart bool
 	halt       bool
 	exited     bool
@@ -71,6 +74,14 @@ type ProcessExitedError struct {
 
 func (pe ProcessExitedError) Error() string {
 	return fmt.Sprintf("Process %d has exited with status %d", pe.Pid, pe.Status)
+}
+
+// GoroutineLocation returns the location of the given
+// goroutine.
+func (dbp *Process) GoroutineLocation(g *G) *location.Location {
+	f, l, fn := dbp.dwarf.PCToLine(g.PC)
+	ll := location.New(g.PC, f, l, fn)
+	return &ll
 }
 
 // Detach from the process being debugged, optionally killing it.
@@ -136,10 +147,7 @@ func (dbp *Process) LoadInformation(path string) error {
 		return err
 	}
 
-	wg.Add(2)
-	go dbp.loadProcessInformation(&wg)
-	go dbp.obtainGoSymbols(exe, &wg)
-	wg.Wait()
+	go dbp.loadProcessInformation()
 
 	return nil
 }
@@ -147,7 +155,7 @@ func (dbp *Process) LoadInformation(path string) error {
 // FindFileLocation returns the PC for a given file:line.
 // Assumes that `file` is normailzed to lower case and '/' on Windows.
 func (dbp *Process) FindFileLocation(fileName string, lineno int) (uint64, error) {
-	pc, fn, err := dbp.symboltab.LineToPC(fileName, lineno)
+	pc, fn, err := dbp.dwarf.LineToPC(fileName, lineno)
 	if err != nil {
 		return 0, err
 	}
@@ -164,7 +172,7 @@ func (dbp *Process) FindFileLocation(fileName string, lineno int) (uint64, error
 // Note that setting breakpoints at that address will cause surprising behavior:
 // https://github.com/derekparker/delve/issues/170
 func (dbp *Process) FindFunctionLocation(funcName string, firstLine bool, lineOffset int) (uint64, error) {
-	origfn := dbp.symboltab.LookupFunc(funcName)
+	origfn := dbp.dwarf.LookupFunc(funcName)
 	if origfn == nil {
 		return 0, fmt.Errorf("Could not find function %s\n", funcName)
 	}
@@ -172,8 +180,8 @@ func (dbp *Process) FindFunctionLocation(funcName string, firstLine bool, lineOf
 	if firstLine {
 		return dbp.FirstPCAfterPrologue(origfn, false)
 	} else if lineOffset > 0 {
-		filename, lineno, _ := dbp.symboltab.PCToLine(origfn.Entry)
-		breakAddr, _, err := dbp.symboltab.LineToPC(filename, lineno+lineOffset)
+		filename, lineno, _ := dbp.dwarf.PCToLine(origfn.Entry)
+		breakAddr, _, err := dbp.dwarf.LineToPC(filename, lineno+lineOffset)
 		return breakAddr, err
 	}
 
@@ -181,7 +189,7 @@ func (dbp *Process) FindFunctionLocation(funcName string, firstLine bool, lineOf
 }
 
 // CurrentLocation returns the location of the current thread.
-func (dbp *Process) CurrentLocation() (*Location, error) {
+func (dbp *Process) CurrentLocation() (*location.Location, error) {
 	return dbp.CurrentThread.Location()
 }
 
@@ -264,7 +272,7 @@ func (dbp *Process) Next() (err error) {
 	var goroutineExiting bool
 	if err = dbp.CurrentThread.setNextBreakpoints(); err != nil {
 		switch t := err.(type) {
-		case ThreadBlockedError, NoReturnAddr: // Noop
+		case ThreadBlockedError, stack.NoReturnAddr: // Noop
 		case GoroutineExitingError:
 			goroutineExiting = t.goid == g.ID
 		default:
@@ -305,7 +313,7 @@ func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 		if g.ChanRecvBlocked() {
 			ret, err := g.chanRecvReturnAddr(dbp)
 			if err != nil {
-				if _, ok := err.(NullAddrError); ok {
+				if _, ok := err.(stack.NullAddrError); ok {
 					continue
 				}
 				return 0, err
@@ -433,7 +441,7 @@ func (dbp *Process) pickCurrentThread(trapthread *Thread) error {
 // Will step into functions.
 func (dbp *Process) Step() (err error) {
 	fn := func() error {
-		var nloc *Location
+		var nloc *location.Location
 		th := dbp.CurrentThread
 		loc, err := th.Location()
 		if err != nil {
@@ -641,12 +649,12 @@ func (dbp *Process) DwarfReader() *reader.Reader {
 
 // Sources returns list of source files that comprise the debugged binary.
 func (dbp *Process) Sources() map[string]*gosym.Obj {
-	return dbp.symboltab.Files
+	return dbp.dwarf.Files()
 }
 
 // Funcs returns list of functions present in the debugged program.
 func (dbp *Process) Funcs() []gosym.Func {
-	return dbp.symboltab.Funcs
+	return dbp.dwarf.Funcs()
 }
 
 // Types returns list of types present in the debugged program.
@@ -656,11 +664,6 @@ func (dbp *Process) Types() ([]string, error) {
 		types = append(types, k)
 	}
 	return types, nil
-}
-
-// PCToLine converts an instruction address to a file/line/function.
-func (dbp *Process) PCToLine(pc uint64) (string, int, *gosym.Func) {
-	return dbp.symboltab.PCToLine(pc)
 }
 
 // FindBreakpointByID finds the breakpoint for the given ID.
@@ -713,7 +716,7 @@ func initializeDebugProcess(dbp *Process, path string, attach bool) (*Process, e
 
 	switch runtime.GOARCH {
 	case "amd64":
-		dbp.arch = AMD64Arch()
+		dbp.arch = arch.AMD64Arch()
 	}
 
 	if err := dbp.updateThreadList(); err != nil {
@@ -778,7 +781,7 @@ func (dbp *Process) run(fn func() error) error {
 	return nil
 }
 
-func (dbp *Process) getGoInformation() (ver GoVersion, isextld bool, err error) {
+func (dbp *Process) getGoInformation() (ver goversion.GoVersion, isextld bool, err error) {
 	vv, err := dbp.EvalPackageVariable("runtime.buildVersion", LoadConfig{true, 0, 64, 0, 0})
 	if err != nil {
 		err = fmt.Errorf("Could not determine version number: %v\n", err)
@@ -789,7 +792,7 @@ func (dbp *Process) getGoInformation() (ver GoVersion, isextld bool, err error) 
 		return
 	}
 
-	ver, ok := ParseVersionString(constant.StringVal(vv.Value))
+	ver, ok := goversion.ParseVersionString(constant.StringVal(vv.Value))
 	if !ok {
 		err = fmt.Errorf("Could not parse version number: %v\n", vv.Value)
 		return
@@ -849,7 +852,7 @@ func (dbp *Process) ConvertEvalScope(gid, frame int) (*EvalScope, error) {
 		out.Thread = g.thread
 	}
 
-	locs, err := g.Stacktrace(frame)
+	locs, err := stack.Trace(frame, g.PC, g.SP, dbp.dwarf, out.Thread.Mem)
 	if err != nil {
 		return nil, err
 	}

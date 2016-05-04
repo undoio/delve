@@ -6,7 +6,6 @@ package proc
 // #include <stdlib.h>
 import "C"
 import (
-	"debug/gosym"
 	"errors"
 	"fmt"
 	"os"
@@ -211,41 +210,6 @@ func (dbp *Process) addThread(port int, attach bool) (*Thread, error) {
 		dbp.SwitchThread(thread.ID)
 	}
 	return thread, nil
-}
-
-func (dbp *Process) obtainGoSymbols(exe *macho.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	var (
-		symdat  []byte
-		pclndat []byte
-		err     error
-	)
-
-	if sec := exe.Section("__gosymtab"); sec != nil {
-		symdat, err = sec.Data()
-		if err != nil {
-			fmt.Println("could not get .gosymtab section", err)
-			os.Exit(1)
-		}
-	}
-
-	if sec := exe.Section("__gopclntab"); sec != nil {
-		pclndat, err = sec.Data()
-		if err != nil {
-			fmt.Println("could not get .gopclntab section", err)
-			os.Exit(1)
-		}
-	}
-
-	pcln := gosym.NewLineTable(pclndat, exe.Section("__text").Addr)
-	tab, err := gosym.NewTable(symdat, pcln)
-	if err != nil {
-		fmt.Println("could not get initialize line table", err)
-		os.Exit(1)
-	}
-
-	dbp.symboltab = tab
 }
 
 func (dbp *Process) findExecutable(path string) (string, *macho.File, error) {

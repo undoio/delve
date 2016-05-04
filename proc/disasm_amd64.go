@@ -4,6 +4,8 @@ import (
 	"debug/gosym"
 	"encoding/binary"
 
+	"github.com/derekparker/delve/pkg/location"
+
 	"rsc.io/x86/x86asm"
 )
 
@@ -63,7 +65,7 @@ func (inst *AsmInstruction) IsCall() bool {
 	return inst.Inst.Op == x86asm.CALL || inst.Inst.Op == x86asm.LCALL
 }
 
-func (thread *Thread) resolveCallArg(inst *ArchInst, currentGoroutine bool, regs Registers) *Location {
+func (thread *Thread) resolveCallArg(inst *ArchInst, currentGoroutine bool, regs Registers) *location.Location {
 	if inst.Op != x86asm.CALL && inst.Op != x86asm.LCALL {
 		return nil
 	}
@@ -109,11 +111,12 @@ func (thread *Thread) resolveCallArg(inst *ArchInst, currentGoroutine bool, regs
 		return nil
 	}
 
-	file, line, fn := thread.dbp.PCToLine(pc)
+	file, line, fn := thread.dbp.dwarf.PCToLine(pc)
 	if fn == nil {
 		return nil
 	}
-	return &Location{PC: pc, File: file, Line: line, Fn: fn}
+	l := location.New(pc, file, line, fn)
+	return &l
 }
 
 type instrseq []x86asm.Op

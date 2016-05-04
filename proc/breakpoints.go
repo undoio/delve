@@ -83,7 +83,7 @@ func (dbp *Process) setBreakpoint(tid int, addr uint64, temp bool) (*Breakpoint,
 		return nil, BreakpointExistsError{bp.File, bp.Line, bp.Addr}
 	}
 
-	f, l, fn := dbp.symboltab.PCToLine(uint64(addr))
+	f, l, fn := dbp.dwarf.PCToLine(uint64(addr))
 	if fn == nil {
 		return nil, InvalidAddressError{address: addr}
 	}

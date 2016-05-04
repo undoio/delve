@@ -2,12 +2,12 @@ package proc
 
 import "syscall"
 
-type memory struct {
+type mem struct {
 	id syscall.Handle
 }
 
-func newMemory(p *Process, tid int) *memory {
-	return &memory{id: p.os.hProcess}
+func newMemory(p *Process, tid int) *mem {
+	return &mem{commonmem: commonmem{arch: p.arch}, id: p.os.hProcess}
 }
 
 func read(tid syscall.Handle, addr uint64, size int) ([]byte, error) {

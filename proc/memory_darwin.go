@@ -8,12 +8,12 @@ import (
 	"unsafe"
 )
 
-type memory struct {
+type mem struct {
 	id C.task_t
 }
 
-func newMemory(p *Process, tid int) *memory {
-	return &memory{id: p.os.task}
+func newMemory(p *Process, tid int) *mem {
+	return &mem{commonmem: commonmem{arch: p.arch}, id: p.os.task}
 }
 
 func read(tid C.task_t, addr uint64, size int) ([]byte, error) {

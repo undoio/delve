@@ -1,7 +1,6 @@
 package proc
 
 import (
-	"debug/gosym"
 	"debug/pe"
 	"errors"
 	"fmt"
@@ -236,25 +235,6 @@ func pcln(exe *pe.File) (textStart uint64, symtab, pclntab []byte, err error) {
 		}
 	}
 	return textStart, symtab, pclntab, nil
-}
-
-func (dbp *Process) obtainGoSymbols(exe *pe.File, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	_, symdat, pclndat, err := pcln(exe)
-	if err != nil {
-		fmt.Println("could not get Go symbols", err)
-		os.Exit(1)
-	}
-
-	pcln := gosym.NewLineTable(pclndat, uint64(exe.Section(".text").Offset))
-	tab, err := gosym.NewTable(symdat, pcln)
-	if err != nil {
-		fmt.Println("could not get initialize line table", err)
-		os.Exit(1)
-	}
-
-	dbp.symboltab = tab
 }
 
 func (dbp *Process) findExecutable(path string) (string, *pe.File, error) {
