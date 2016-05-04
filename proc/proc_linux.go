@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/debug/elf"
-
 	sys "golang.org/x/sys/unix"
 )
 
@@ -154,19 +152,11 @@ func (dbp *Process) updateThreadList() error {
 	return nil
 }
 
-func (dbp *Process) findExecutable(path string) (string, *elf.File, error) {
+func (dbp *Process) findExecutable(path string) (string, error) {
 	if path == "" {
 		path = fmt.Sprintf("/proc/%d/exe", dbp.Pid)
 	}
-	f, err := os.OpenFile(path, 0, os.ModePerm)
-	if err != nil {
-		return path, nil, err
-	}
-	elfFile, err := elf.NewFile(f)
-	if err != nil {
-		return path, nil, err
-	}
-	return path, elfFile, nil
+	return path, nil
 }
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {

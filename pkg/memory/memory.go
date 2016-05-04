@@ -27,14 +27,14 @@ func NewCache(mem ReadWriter, addr uint64, size int) ReadWriter {
 			if err != nil {
 				return mem
 			}
-			return &Cache{addr, cache, mem}
+			return &Cache{cacheAddr: addr, cache: cache, mem: mem}
 		}
 	}
 	cache, err := mem.Read(addr, size)
 	if err != nil {
 		return mem
 	}
-	return &Cache{addr, cache, mem}
+	return &Cache{cacheAddr: addr, cache: cache, mem: mem}
 }
 
 func (m *Cache) Arch() arch.Arch {
@@ -52,6 +52,9 @@ func (m *Cache) Read(addr uint64, size int) (data []byte, err error) {
 }
 
 func (m *Cache) Write(addr uint64, data []byte) (written int, err error) {
+	if m.contains(addr, len(data)) {
+		copy(m.cache[addr-m.cacheAddr:], data)
+	}
 	return m.mem.Write(addr, data)
 }
 

@@ -1,8 +1,10 @@
 package dwarf
 
 import (
+	"bytes"
 	"debug/gosym"
 	"go/ast"
+	"go/printer"
 	"go/token"
 	"reflect"
 	"strconv"
@@ -15,84 +17,6 @@ import (
 	"github.com/derekparker/delve/pkg/dwarf/line"
 	"github.com/derekparker/delve/pkg/dwarf/reader"
 )
-
-// Do not call this function directly it isn't able to deal correctly with package paths
-func (d *Dwarf) findType(name string) (dwarf.Type, error) {
-	off, found := d.Types[name]
-	if !found {
-		return nil, reader.TypeNotFoundErr
-	}
-	return d.Type(off)
-}
-
-func (d *Dwarf) FindTypeExpr(expr ast.Expr) (dwarf.Type, error) {
-	if lit, islit := expr.(*ast.BasicLit); islit && lit.Kind == token.STRING {
-		// Allow users to specify type names verbatim as quoted
-		// string. Useful as a catch-all workaround for cases where we don't
-		// parse/serialize types correctly or can not resolve package paths.
-		typn, _ := strconv.Unquote(lit.Value)
-		return d.findType(typn)
-	}
-	expandPackagesInType(d.Packages, expr)
-	if snode, ok := expr.(*ast.StarExpr); ok {
-		// Pointer types only appear in the dwarf informations when
-		// a pointer to the type is used in the target program, here
-		// we create a pointer type on the fly so that the user can
-		// specify a pointer to any variable used in the target program
-		ptyp, err := d.FindTypeExpr(snode.X)
-		if err != nil {
-			return nil, err
-		}
-		return PointerTo(ptyp), nil
-	}
-	return d.findType(exprToString(expr))
-}
-
-func complexType(typename string) bool {
-	for _, ch := range typename {
-		switch ch {
-		case '*', '[', '<', '{', '(', ' ':
-			return true
-		}
-	}
-	return false
-}
-
-func expandPackagesInType(packages map[string]string, expr ast.Expr) {
-	switch e := expr.(type) {
-	case *ast.ArrayType:
-		expandPackagesInType(packages, e.Elt)
-	case *ast.ChanType:
-		expandPackagesInType(packages, e.Value)
-	case *ast.FuncType:
-		for i := range e.Params.List {
-			expandPackagesInType(packages, e.Params.List[i].Type)
-		}
-		if e.Results != nil {
-			for i := range e.Results.List {
-				expandPackagesInType(packages, e.Results.List[i].Type)
-			}
-		}
-	case *ast.MapType:
-		expandPackagesInType(packages, e.Key)
-		expandPackagesInType(packages, e.Value)
-	case *ast.ParenExpr:
-		expandPackagesInType(packages, e.X)
-	case *ast.SelectorExpr:
-		switch x := e.X.(type) {
-		case *ast.Ident:
-			if path, ok := packages[x.Name]; ok {
-				x.Name = path
-			}
-		default:
-			expandPackagesInType(packages, e.X)
-		}
-	case *ast.StarExpr:
-		expandPackagesInType(packages, e.X)
-	default:
-		// nothing to do
-	}
-}
 
 type Dwarf struct {
 	Frame    frame.FrameDescriptionEntries
@@ -235,6 +159,38 @@ func PointerTo(typ dwarf.Type) dwarf.Type {
 	return &dwarf.PtrType{dwarf.CommonType{int64(unsafe.Sizeof(uintptr(1))), "", reflect.Ptr, 0}, typ}
 }
 
+func (d *Dwarf) FindTypeExpr(expr ast.Expr) (dwarf.Type, error) {
+	if lit, islit := expr.(*ast.BasicLit); islit && lit.Kind == token.STRING {
+		// Allow users to specify type names verbatim as quoted
+		// string. Useful as a catch-all workaround for cases where we don't
+		// parse/serialize types correctly or can not resolve package paths.
+		typn, _ := strconv.Unquote(lit.Value)
+		return d.FindType(typn)
+	}
+	expandPackagesInType(d.Packages, expr)
+	if snode, ok := expr.(*ast.StarExpr); ok {
+		// Pointer types only appear in the dwarf informations when
+		// a pointer to the type is used in the target program, here
+		// we create a pointer type on the fly so that the user can
+		// specify a pointer to any variable used in the target program
+		ptyp, err := d.FindTypeExpr(snode.X)
+		if err != nil {
+			return nil, err
+		}
+		return PointerTo(ptyp), nil
+	}
+	return d.FindType(exprToString(expr))
+}
+
+// Do not call this function directly it isn't able to deal correctly with package paths
+func (d *Dwarf) FindType(name string) (dwarf.Type, error) {
+	off, found := d.Types[name]
+	if !found {
+		return nil, reader.TypeNotFoundErr
+	}
+	return d.Type(off)
+}
+
 func complexType(typename string) bool {
 	for _, ch := range typename {
 		switch ch {
@@ -243,4 +199,46 @@ func complexType(typename string) bool {
 		}
 	}
 	return false
+}
+
+func exprToString(t ast.Expr) string {
+	var buf bytes.Buffer
+	printer.Fprint(&buf, token.NewFileSet(), t)
+	return buf.String()
+}
+
+func expandPackagesInType(packages map[string]string, expr ast.Expr) {
+	switch e := expr.(type) {
+	case *ast.ArrayType:
+		expandPackagesInType(packages, e.Elt)
+	case *ast.ChanType:
+		expandPackagesInType(packages, e.Value)
+	case *ast.FuncType:
+		for i := range e.Params.List {
+			expandPackagesInType(packages, e.Params.List[i].Type)
+		}
+		if e.Results != nil {
+			for i := range e.Results.List {
+				expandPackagesInType(packages, e.Results.List[i].Type)
+			}
+		}
+	case *ast.MapType:
+		expandPackagesInType(packages, e.Key)
+		expandPackagesInType(packages, e.Value)
+	case *ast.ParenExpr:
+		expandPackagesInType(packages, e.X)
+	case *ast.SelectorExpr:
+		switch x := e.X.(type) {
+		case *ast.Ident:
+			if path, ok := packages[x.Name]; ok {
+				x.Name = path
+			}
+		default:
+			expandPackagesInType(packages, e.X)
+		}
+	case *ast.StarExpr:
+		expandPackagesInType(packages, e.X)
+	default:
+		// nothing to do
+	}
 }

@@ -1,17 +1,16 @@
 package proc
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
-	"reflect"
-	"runtime"
 
 	"golang.org/x/debug/dwarf"
 
 	"github.com/derekparker/delve/pkg/dwarf/frame"
+	"github.com/derekparker/delve/pkg/eval"
+	"github.com/derekparker/delve/pkg/goroutine"
 	"github.com/derekparker/delve/pkg/location"
 	"github.com/derekparker/delve/pkg/memory"
 	"github.com/derekparker/delve/pkg/stack"
@@ -44,6 +43,14 @@ func NewThread(tid int, p *Process) *Thread {
 		dbp: p,
 		os:  new(OSSpecificDetails),
 	}
+}
+
+func (thread *Thread) Stacktrace(depth int) ([]stack.Frame, error) {
+	regs, err := thread.Registers()
+	if err != nil {
+		return nil, err
+	}
+	return stack.Trace(depth, regs.PC(), regs.SP(), thread.dbp.dwarf, thread.Mem)
 }
 
 // Continue the execution of this thread.
@@ -273,31 +280,6 @@ func (thread *Thread) SetPC(pc uint64) error {
 	return regs.SetPC(thread, pc)
 }
 
-func (thread *Thread) getGVariable() (*Variable, error) {
-	regs, err := thread.Registers()
-	if err != nil {
-		return nil, err
-	}
-
-	if thread.dbp.arch.GStructOffset() == 0 {
-		// GetG was called through SwitchThread / updateThreadList during initialization
-		// thread.dbp.arch isn't setup yet (it needs a CurrentThread to read global variables from)
-		return nil, fmt.Errorf("g struct offset not initialized")
-	}
-
-	gaddrbs, err := thread.Read(uint64(regs.TLS()+thread.dbp.arch.GStructOffset()), thread.dbp.arch.PtrSize())
-	if err != nil {
-		return nil, err
-	}
-	gaddr := uintptr(binary.LittleEndian.Uint64(gaddrbs))
-
-	// On Windows, the value at TLS()+GStructOffset() is a
-	// pointer to the G struct.
-	needsDeref := runtime.GOOS == "windows"
-
-	return thread.newGVariable(gaddr, needsDeref)
-}
-
 func (thread *Thread) Read(addr uint64, size int) ([]byte, error) {
 	return thread.Mem.Read(addr, size)
 }
@@ -308,23 +290,6 @@ func (thread *Thread) Write(addr uint64, data []byte) (int, error) {
 
 func (thread *Thread) Swap(addr uint64, data []byte) ([]byte, error) {
 	return thread.Mem.Swap(addr, data)
-}
-
-func (thread *Thread) newGVariable(gaddr uintptr, deref bool) (*Variable, error) {
-	typ, err := thread.dbp.findType("runtime.g")
-	if err != nil {
-		return nil, err
-	}
-
-	name := ""
-
-	if deref {
-		typ = &dwarf.PtrType{dwarf.CommonType{int64(thread.dbp.arch.PtrSize()), "", reflect.Ptr, 0}, typ}
-	} else {
-		name = "runtime.curg"
-	}
-
-	return thread.newVariable(name, gaddr, typ), nil
 }
 
 // GetG returns information on the G (goroutine) that is executing on this thread.
@@ -341,17 +306,16 @@ func (thread *Thread) newGVariable(gaddr uintptr, deref bool) (*Variable, error)
 //
 // In order to get around all this craziness, we read the address of the G structure for
 // the current thread from the thread local storage area.
-func (thread *Thread) GetG() (g *G, err error) {
-	gaddr, err := thread.getGVariable()
+func (thread *Thread) GetG() (*goroutine.G, error) {
+	scope, err := thread.Scope()
 	if err != nil {
 		return nil, err
 	}
-
-	g, err = gaddr.parseG()
-	if err == nil {
-		g.thread = thread
+	gvar, err := scope.Goroutine()
+	if err != nil {
+		return nil, err
 	}
-	return
+	return eval.ParseG(gvar, thread.ID)
 }
 
 // Stopped returns whether the thread is stopped at
@@ -378,7 +342,7 @@ func (thread *Thread) Halt() (err error) {
 }
 
 // Scope returns the current EvalScope for this thread.
-func (thread *Thread) Scope() (*EvalScope, error) {
+func (thread *Thread) Scope() (*eval.Scope, error) {
 	regs, err := thread.Registers()
 	if err != nil {
 		return nil, err
@@ -390,7 +354,7 @@ func (thread *Thread) Scope() (*EvalScope, error) {
 	if len(locations) < 1 {
 		return nil, errors.New("could not decode first frame")
 	}
-	return &EvalScope{Thread: thread, PC: locations[0].Current.PC, CFA: locations[0].CFA, dwarf: thread.dbp.dwarf}, nil
+	return eval.NewScope(locations[0].Current.PC, locations[0].CFA, thread.Mem, thread.dbp.dwarf, thread.dbp.arch, regs.TLS()), nil
 }
 
 // SetCurrentBreakpoint sets the current breakpoint that this
@@ -448,4 +412,8 @@ func (thread *Thread) onNextGoroutine() (bool, error) {
 		return false, nil
 	}
 	return bp.checkCondition(thread)
+}
+
+func (t *Thread) newVariable(name string, addr uintptr, dwarfType dwarf.Type) *eval.Variable {
+	return eval.NewVariable(name, addr, dwarfType, t.dbp.arch, t.Mem, t.dbp.dwarf)
 }

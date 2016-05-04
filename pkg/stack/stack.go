@@ -44,7 +44,7 @@ func ReturnAddress(pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) (ui
 	return locations[1].Current.PC, nil
 }
 
-// Stacktrace returns the stack trace for thread.
+// Trace returns the stack trace for thread.
 // Note the locations in the array are return addresses not call addresses.
 func Trace(depth int, pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) ([]Frame, error) {
 	return NewIterator(pc, sp, dwarf, mem).unwind(depth)

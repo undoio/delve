@@ -1,4 +1,4 @@
-package proc
+package eval
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/token"
+	"log"
 	"reflect"
 	"strings"
 	"unsafe"
@@ -18,9 +19,8 @@ import (
 	pdwarf "github.com/derekparker/delve/pkg/dwarf"
 	"github.com/derekparker/delve/pkg/dwarf/op"
 	"github.com/derekparker/delve/pkg/dwarf/reader"
-	"github.com/derekparker/delve/pkg/location"
+	"github.com/derekparker/delve/pkg/goroutine"
 	"github.com/derekparker/delve/pkg/memory"
-	"github.com/derekparker/delve/pkg/stack"
 )
 
 const (
@@ -28,14 +28,9 @@ const (
 
 	maxArrayStridePrefetch = 1024 // Maximum size of array stride for which we will prefetch the array contents
 
-	chanRecv = "chan receive"
-	chanSend = "chan send"
-
 	hashTophashEmpty = 0 // used by map reading code, indicates an empty bucket
 	hashMinTopHash   = 4 // used by map reading code, indicates minimum value of tophash that isn't empty or evacuated
 )
-
-var ptrSize = int(unsafe.Sizeof(uintptr(1)))
 
 // Variable represents a variable. It contains the address, name,
 // type and other information parsed from both the Dwarf information
@@ -90,80 +85,15 @@ type LoadConfig struct {
 var loadSingleValue = LoadConfig{false, 0, 64, 0, 0}
 var loadFullValue = LoadConfig{true, 1, 64, 64, -1}
 
-// M represents a runtime M (OS thread) structure.
-type M struct {
-	procid   int     // Thread ID or port.
-	spinning uint8   // Busy looping.
-	blocked  uint8   // Waiting on futex / semaphore.
-	curg     uintptr // Current G running on this thread.
-}
-
-// G status, from: src/runtime/runtime2.go
-const (
-	Gidle           uint64 = iota // 0
-	Grunnable                     // 1 runnable and on a run queue
-	Grunning                      // 2
-	Gsyscall                      // 3
-	Gwaiting                      // 4
-	GmoribundUnused               // 5 currently unused, but hardcoded in gdb scripts
-	Gdead                         // 6
-	Genqueue                      // 7 Only the Gscanenqueue is used.
-	Gcopystack                    // 8 in this state when newstack is moving the stack
-)
-
-// G represents a runtime G (goroutine) structure (at least the
-// fields that Delve is interested in).
-type G struct {
-	ID         int    // Goroutine ID
-	PC         uint64 // PC of goroutine when it was parked.
-	SP         uint64 // SP of goroutine when it was parked.
-	GoPC       uint64 // PC of 'go' statement that created this goroutine.
-	WaitReason string // Reason for goroutine being parked.
-	Status     uint64
-
-	// Information on goroutine location
-	CurrentLoc location.Location
-
-	// PC of entry to top-most deferred function.
-	DeferPC uint64
-
-	// Thread that this goroutine is currently allocated to
-	thread *Thread
-	dwarf  *pdwarf.Dwarf
-}
-
-// EvalScope is the scope for variable evaluation. Contains the thread,
-// current location (PC), and canonical frame address.
-type EvalScope struct {
-	Thread *Thread
-	PC     uint64
-	CFA    int64
-
-	dwarf *pdwarf.Dwarf
-}
-
-// IsNilErr is returned when a variable is nil.
-type IsNilErr struct {
-	name string
-}
-
-func (err *IsNilErr) Error() string {
-	return fmt.Sprintf("%s is nil", err.name)
-}
-
-func (scope *EvalScope) newVariable(name string, addr uintptr, dwarfType dwarf.Type) *Variable {
-	return newVariable(name, addr, dwarfType, scope.Thread.dbp.arch, scope.Thread.Mem, scope.dwarf)
-}
-
-func (t *Thread) newVariable(name string, addr uintptr, dwarfType dwarf.Type) *Variable {
-	return newVariable(name, addr, dwarfType, t.dbp.arch, t.Mem, t.dbp.dwarf)
+func (scope *Scope) newVariable(name string, addr uintptr, dwarfType dwarf.Type) *Variable {
+	return NewVariable(name, addr, dwarfType, scope.arch, scope.Mem, scope.dwarf)
 }
 
 func (v *Variable) newVariable(name string, addr uintptr, dwarfType dwarf.Type) *Variable {
-	return newVariable(name, addr, dwarfType, v.arch, v.mem, v.dwarf)
+	return NewVariable(name, addr, dwarfType, v.arch, v.mem, v.dwarf)
 }
 
-func newVariable(name string, addr uintptr, dwarfType dwarf.Type, arch arch.Arch, mem memory.ReadWriter, dw *pdwarf.Dwarf) *Variable {
+func NewVariable(name string, addr uintptr, dwarfType dwarf.Type, arch arch.Arch, mem memory.ReadWriter, dw *pdwarf.Dwarf) *Variable {
 	v := &Variable{
 		Name:      name,
 		Addr:      addr,
@@ -320,56 +250,29 @@ func (v *Variable) toField(field *dwarf.StructField) (*Variable, error) {
 
 // DwarfReader returns the DwarfReader containing the
 // Dwarf information for the target process.
-func (scope *EvalScope) DwarfReader() *reader.Reader {
-	return scope.Thread.dbp.DwarfReader()
+func (scope *Scope) DwarfReader() *reader.Reader {
+	return scope.dwarf.Reader()
 }
 
 // Type returns the Dwarf type entry at `offset`.
-func (scope *EvalScope) Type(offset dwarf.Offset) (dwarf.Type, error) {
-	return scope.Thread.dbp.dwarf.Type(offset)
+func (scope *Scope) Type(offset dwarf.Offset) (dwarf.Type, error) {
+	return scope.dwarf.Type(offset)
 }
 
-// ChanRecvBlocked returns whether the goroutine is blocked on
-// a channel read operation.
-func (g *G) ChanRecvBlocked() bool {
-	return (g.thread == nil) && (g.WaitReason == chanRecv)
-}
-
-// chanRecvReturnAddr returns the address of the return from a channel read.
-func (g *G) chanRecvReturnAddr(dbp *Process) (uint64, error) {
-	locs, err := stack.Trace(4, g.PC, g.SP, dbp.dwarf, dbp.CurrentThread.Mem)
-	if err != nil {
-		return 0, err
-	}
-	topLoc := locs[len(locs)-1]
-	return topLoc.Current.PC, nil
-}
-
-// NoGError returned when a G could not be found
-// for a specific thread.
-type NoGError struct {
-	tid int
-}
-
-func (ng NoGError) Error() string {
-	return fmt.Sprintf("no G executing on thread %d", ng.tid)
-}
-
-func (gvar *Variable) parseG() (*G, error) {
+func ParseG(gvar *Variable, tid int) (*goroutine.G, error) {
 	mem := gvar.mem
 	gaddr := uint64(gvar.Addr)
 	_, deref := gvar.RealType.(*dwarf.PtrType)
 
 	if deref {
-		gaddrbytes, err := mem.Read(gaddr, ptrSize)
+		gaddrbytes, err := mem.Read(gaddr, gvar.arch.PtrSize())
 		if err != nil {
 			return nil, fmt.Errorf("error derefing *G %s", err)
 		}
 		gaddr = binary.LittleEndian.Uint64(gaddrbytes)
 	}
 	if gaddr == 0 {
-		// TODO(derekparker) return actual thread id
-		return nil, NoGError{tid: 0}
+		return nil, goroutine.NoGError{Tid: tid}
 	}
 	gvar.loadValue(loadFullValue)
 	if gvar.Unreadable != nil {
@@ -381,15 +284,19 @@ func (gvar *Variable) parseG() (*G, error) {
 	id, _ := constant.Int64Val(gvar.toFieldNamed("goid").Value)
 	gopc, _ := constant.Int64Val(gvar.toFieldNamed("gopc").Value)
 	waitReason := constant.StringVal(gvar.toFieldNamed("waitreason").Value)
-	d := gvar.toFieldNamed("_defer")
 	deferPC := int64(0)
-	fnvar := d.toFieldNamed("fn")
-	if fnvar != nil {
-		fnvalvar := fnvar.toFieldNamed("fn")
-		deferPC, _ = constant.Int64Val(fnvalvar.Value)
+	d := gvar.toFieldNamed("_defer")
+	if d != nil {
+		fnvar := d.toFieldNamed("fn")
+		if fnvar != nil {
+			fnvalvar := fnvar.toFieldNamed("fn")
+			if fnvalvar != nil {
+				deferPC, _ = constant.Int64Val(fnvalvar.Value)
+			}
+		}
 	}
 	status, _ := constant.Int64Val(gvar.toFieldNamed("atomicstatus").Value)
-	g := &G{
+	g := &goroutine.G{
 		ID:         int(id),
 		GoPC:       uint64(gopc),
 		PC:         uint64(pc),
@@ -397,11 +304,14 @@ func (gvar *Variable) parseG() (*G, error) {
 		WaitReason: waitReason,
 		DeferPC:    uint64(deferPC),
 		Status:     uint64(status),
-		dwarf:      gvar.dwarf,
+		Dwarf:      gvar.dwarf,
+		Mem:        gvar.mem,
+		ThreadID:   tid,
 	}
 	return g, nil
 }
 
+// TODO(derekparker) surface errors here
 func (v *Variable) toFieldNamed(name string) *Variable {
 	v, err := v.structMember(name)
 	if err != nil {
@@ -414,50 +324,19 @@ func (v *Variable) toFieldNamed(name string) *Variable {
 	return v
 }
 
-// From $GOROOT/src/runtime/traceback.go:597
-// isExportedRuntime reports whether name is an exported runtime function.
-// It is only for runtime functions, so ASCII A-Z is fine.
-func isExportedRuntime(name string) bool {
-	const n = len("runtime.")
-	return len(name) > n && name[:n] == "runtime." && 'A' <= name[n] && name[n] <= 'Z'
-}
-
-// UserCurrent returns the location the users code is at,
-// or was at before entering a runtime function.
-func (g *G) UserCurrent() location.Location {
-	it := stack.NewIterator(g.PC, g.SP, g.thread.dbp.dwarf, g.thread.Mem)
-	for it.Next() {
-		frame := it.Frame()
-		if frame.Call.Fn != nil {
-			name := frame.Call.Fn.Name
-			if (strings.Index(name, ".") >= 0) && (!strings.HasPrefix(name, "runtime.") || isExportedRuntime(name)) {
-				return frame.Call
-			}
-		}
-	}
-	return g.CurrentLoc
-}
-
-// Go returns the location of the 'go' statement
-// that spawned this goroutine.
-func (g *G) Go() location.Location {
-	f, l, fn := g.dwarf.PCToLine(g.GoPC)
-	return location.New(g.GoPC, f, l, fn)
-}
-
 // EvalVariable returns the value of the given expression (backwards compatibility).
-func (scope *EvalScope) EvalVariable(name string, cfg LoadConfig) (*Variable, error) {
+func (scope *Scope) EvalVariable(name string, cfg LoadConfig) (*Variable, error) {
 	return scope.EvalExpression(name, cfg)
 }
 
 // SetVariable sets the value of the named variable
-func (scope *EvalScope) SetVariable(name, value string) error {
+func (scope *Scope) SetVariable(name, value string) error {
 	t, err := parser.ParseExpr(name)
 	if err != nil {
 		return err
 	}
 
-	xv, err := scope.evalAST(t)
+	xv, err := scope.EvalAST(t)
 	if err != nil {
 		return err
 	}
@@ -475,7 +354,7 @@ func (scope *EvalScope) SetVariable(name, value string) error {
 		return err
 	}
 
-	yv, err := scope.evalAST(t)
+	yv, err := scope.EvalAST(t)
 	if err != nil {
 		return err
 	}
@@ -493,7 +372,7 @@ func (scope *EvalScope) SetVariable(name, value string) error {
 	return xv.setValue(yv)
 }
 
-func (scope *EvalScope) extractVariableFromEntry(entry *dwarf.Entry, cfg LoadConfig) (*Variable, error) {
+func (scope *Scope) extractVariableFromEntry(entry *dwarf.Entry, cfg LoadConfig) (*Variable, error) {
 	rdr := scope.DwarfReader()
 	v, err := scope.extractVarInfoFromEntry(entry, rdr)
 	if err != nil {
@@ -503,7 +382,7 @@ func (scope *EvalScope) extractVariableFromEntry(entry *dwarf.Entry, cfg LoadCon
 	return v, nil
 }
 
-func (scope *EvalScope) extractVarInfo(varName string) (*Variable, error) {
+func (scope *Scope) extractVarInfo(varName string) (*Variable, error) {
 	reader := scope.DwarfReader()
 
 	_, err := reader.SeekToFunction(scope.PC)
@@ -529,17 +408,17 @@ func (scope *EvalScope) extractVarInfo(varName string) (*Variable, error) {
 }
 
 // LocalVariables returns all local variables from the current function scope.
-func (scope *EvalScope) LocalVariables(cfg LoadConfig) ([]*Variable, error) {
+func (scope *Scope) LocalVariables(cfg LoadConfig) ([]*Variable, error) {
 	return scope.variablesByTag(dwarf.TagVariable, cfg)
 }
 
 // FunctionArguments returns the name, value, and type of all current function arguments.
-func (scope *EvalScope) FunctionArguments(cfg LoadConfig) ([]*Variable, error) {
+func (scope *Scope) FunctionArguments(cfg LoadConfig) ([]*Variable, error) {
 	return scope.variablesByTag(dwarf.TagFormalParameter, cfg)
 }
 
 // PackageVariables returns the name, value, and type of all package variables in the application.
-func (scope *EvalScope) PackageVariables(cfg LoadConfig) ([]*Variable, error) {
+func (scope *Scope) PackageVariables(cfg LoadConfig) ([]*Variable, error) {
 	var vars []*Variable
 	reader := scope.DwarfReader()
 
@@ -571,10 +450,8 @@ func (scope *EvalScope) PackageVariables(cfg LoadConfig) ([]*Variable, error) {
 
 // EvalPackageVariable will evaluate the package level variable
 // specified by 'name'.
-func (dbp *Process) EvalPackageVariable(name string, cfg LoadConfig) (*Variable, error) {
-	scope := &EvalScope{Thread: dbp.CurrentThread, PC: 0, CFA: 0, dwarf: dbp.dwarf}
-
-	v, err := scope.packageVarAddr(name)
+func PackageVariable(name string, cfg LoadConfig, dwarf *pdwarf.Dwarf, arch arch.Arch, mem memory.ReadWriter, tls uint64) (*Variable, error) {
+	v, err := NewScope(0, 0, mem, dwarf, arch, tls).packageVarAddr(name)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +459,7 @@ func (dbp *Process) EvalPackageVariable(name string, cfg LoadConfig) (*Variable,
 	return v, nil
 }
 
-func (scope *EvalScope) packageVarAddr(name string) (*Variable, error) {
+func (scope *Scope) packageVarAddr(name string) (*Variable, error) {
 	reader := scope.DwarfReader()
 	for entry, err := reader.NextPackageVariable(); entry != nil; entry, err = reader.NextPackageVariable() {
 		if err != nil {
@@ -661,7 +538,7 @@ func (v *Variable) structMember(memberName string) (*Variable, error) {
 
 // Extracts the name and type of a variable from a dwarf entry
 // then executes the instructions given in the  DW_AT_location attribute to grab the variable's address
-func (scope *EvalScope) extractVarInfoFromEntry(entry *dwarf.Entry, rdr *reader.Reader) (*Variable, error) {
+func (scope *Scope) extractVarInfoFromEntry(entry *dwarf.Entry, rdr *reader.Reader) (*Variable, error) {
 	if entry == nil {
 		return nil, fmt.Errorf("invalid entry")
 	}
@@ -846,10 +723,10 @@ func readStringInfo(mem memory.ReadWriter, arch arch.Arch, addr uintptr) (uintpt
 	// string data structure is always two ptrs in size. Addr, followed by len
 	// http://research.swtch.com/godata
 
-	mem = memory.NewCache(mem, uint64(addr), ptrSize*2)
+	mem = memory.NewCache(mem, uint64(addr), arch.PtrSize()*2)
 
 	// read len
-	val, err := mem.Read(uint64(addr+uintptr(ptrSize)), ptrSize)
+	val, err := mem.Read(uint64(addr+uintptr(arch.PtrSize())), arch.PtrSize())
 	if err != nil {
 		return 0, 0, fmt.Errorf("could not read string len %s", err)
 	}
@@ -859,7 +736,7 @@ func readStringInfo(mem memory.ReadWriter, arch arch.Arch, addr uintptr) (uintpt
 	}
 
 	// read addr
-	val, err = mem.Read(uint64(addr), ptrSize)
+	val, err = mem.Read(uint64(addr), arch.PtrSize())
 	if err != nil {
 		return 0, 0, fmt.Errorf("could not read string pointer %s", err)
 	}
@@ -1044,6 +921,7 @@ func (v *Variable) writeUint(value uint64, size int64) error {
 
 func readUintRaw(mem memory.ReadWriter, addr uintptr, size int64) (uint64, error) {
 	var n uint64
+	log.Printf("readUintRaw(%#v, %d)\n", addr, size)
 
 	val, err := mem.Read(uint64(addr), int(size))
 	if err != nil {
@@ -1109,7 +987,7 @@ func (v *Variable) writeBool(value bool) error {
 }
 
 func (v *Variable) readFunctionPtr() {
-	val, err := v.mem.Read(uint64(v.Addr), ptrSize)
+	val, err := v.mem.Read(uint64(v.Addr), v.arch.PtrSize())
 	if err != nil {
 		v.Unreadable = err
 		return
@@ -1123,7 +1001,7 @@ func (v *Variable) readFunctionPtr() {
 		return
 	}
 
-	val, err = v.mem.Read(fnaddr, ptrSize)
+	val, err = v.mem.Read(fnaddr, v.arch.PtrSize())
 	if err != nil {
 		v.Unreadable = err
 		return
@@ -1460,7 +1338,7 @@ func (v *Variable) loadInterface(recurseLevel int, loadData bool, cfg LoadConfig
 		return
 	}
 
-	typ, err := v.dbp.findTypeExpr(t)
+	typ, err := v.dwarf.FindTypeExpr(t)
 	if err != nil {
 		v.Unreadable = fmt.Errorf("interface type \"%s\" not found for 0x%x: %v", constant.StringVal(typestring.Value), data.Addr, err)
 		return
@@ -1469,7 +1347,7 @@ func (v *Variable) loadInterface(recurseLevel int, loadData bool, cfg LoadConfig
 	realtyp := resolveTypedef(typ)
 	if _, isptr := realtyp.(*dwarf.PtrType); !isptr {
 		// interface to non-pointer types are pointers even if the type says otherwise
-		typ = v.dbp.pointerTo(typ)
+		typ = pdwarf.PointerTo(typ)
 	}
 
 	data = data.newVariable("data", data.Addr, typ)
@@ -1484,7 +1362,7 @@ func (v *Variable) loadInterface(recurseLevel int, loadData bool, cfg LoadConfig
 }
 
 // Fetches all variables of a specific type in the current function scope
-func (scope *EvalScope) variablesByTag(tag dwarf.Tag, cfg LoadConfig) ([]*Variable, error) {
+func (scope *Scope) variablesByTag(tag dwarf.Tag, cfg LoadConfig) ([]*Variable, error) {
 	reader := scope.DwarfReader()
 
 	_, err := reader.SeekToFunction(scope.PC)

@@ -237,21 +237,13 @@ func pcln(exe *pe.File) (textStart uint64, symtab, pclntab []byte, err error) {
 	return textStart, symtab, pclntab, nil
 }
 
-func (dbp *Process) findExecutable(path string) (string, *pe.File, error) {
+func (dbp *Process) findExecutable(path string) (string, error) {
 	if path == "" {
 		// TODO: Find executable path from PID/handle on Windows:
 		// https://msdn.microsoft.com/en-us/library/aa366789(VS.85).aspx
-		return "", nil, fmt.Errorf("not yet implemented")
+		return "", fmt.Errorf("not yet implemented")
 	}
-	f, err := os.OpenFile(path, 0, os.ModePerm)
-	if err != nil {
-		return "", nil, err
-	}
-	peFile, err := pe.NewFile(f)
-	if err != nil {
-		return "", nil, err
-	}
-	return path, peFile, nil
+	return path, nil
 }
 
 func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {

@@ -7,6 +7,8 @@ import (
 	"go/constant"
 	"log"
 	"reflect"
+
+	"github.com/derekparker/delve/pkg/eval"
 )
 
 var (
@@ -34,8 +36,8 @@ type Breakpoint struct {
 	Goroutine     bool     // Retrieve goroutine information
 	Stacktrace    int      // Number of stack frames to retrieve
 	Variables     []string // Variables to evaluate
-	LoadArgs      *LoadConfig
-	LoadLocals    *LoadConfig
+	LoadArgs      *eval.LoadConfig
+	LoadLocals    *eval.LoadConfig
 	HitCount      map[int]uint64 // Number of times a breakpoint has been reached in a certain goroutine
 	TotalHitCount uint64         // Number of times a breakpoint has been reached
 
@@ -133,7 +135,7 @@ func (bp *Breakpoint) checkCondition(thread *Thread) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	v, err := scope.evalAST(bp.Cond)
+	v, err := scope.EvalAST(bp.Cond)
 	if err != nil {
 		return true, fmt.Errorf("error evaluating expression: %v", err)
 	}

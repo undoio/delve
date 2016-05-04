@@ -15,8 +15,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"golang.org/x/debug/macho"
-
 	sys "golang.org/x/sys/unix"
 )
 
@@ -212,15 +210,11 @@ func (dbp *Process) addThread(port int, attach bool) (*Thread, error) {
 	return thread, nil
 }
 
-func (dbp *Process) findExecutable(path string) (string, *macho.File, error) {
+func (dbp *Process) findExecutable(path string) (string, error) {
 	if path == "" {
 		path = C.GoString(C.find_executable(C.int(dbp.Pid)))
 	}
-	exe, err := macho.Open(path)
-	if err != nil {
-		return "", nil, err
-	}
-	return path, exe, nil
+	return path, nil
 }
 
 func (dbp *Process) trapWait(pid int) (*Thread, error) {
