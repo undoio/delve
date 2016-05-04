@@ -1,4 +1,4 @@
-package proc
+package eval
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"go/printer"
 	"go/token"
 	"reflect"
+	"runtime"
 
 	"github.com/derekparker/delve/pkg/dwarf/reader"
 
@@ -17,13 +18,13 @@ import (
 )
 
 // EvalExpression returns the value of the given expression.
-func (scope *EvalScope) EvalExpression(expr string, cfg LoadConfig) (*Variable, error) {
+func (scope *Scope) EvalExpression(expr string, cfg LoadConfig) (*Variable, error) {
 	t, err := parser.ParseExpr(expr)
 	if err != nil {
 		return nil, err
 	}
 
-	ev, err := scope.evalAST(t)
+	ev, err := scope.EvalAST(t)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +35,7 @@ func (scope *EvalScope) EvalExpression(expr string, cfg LoadConfig) (*Variable, 
 	return ev, nil
 }
 
-func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
+func (scope *Scope) EvalAST(t ast.Expr) (*Variable, error) {
 	switch node := t.(type) {
 	case *ast.CallExpr:
 		if len(node.Args) == 1 {
@@ -59,13 +60,13 @@ func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
 
 	case *ast.ParenExpr:
 		// otherwise just eval recursively
-		return scope.evalAST(node.X)
+		return scope.EvalAST(node.X)
 
 	case *ast.SelectorExpr: // <expression>.<identifier>
 		// try to interpret the selector as a package variable
 		if maybePkg, ok := node.X.(*ast.Ident); ok {
 			if maybePkg.Name == "runtime" && node.Sel.Name == "curg" {
-				return scope.Thread.getGVariable()
+				return scope.Goroutine()
 			} else if v, err := scope.packageVarAddr(maybePkg.Name + "." + node.Sel.Name); err == nil {
 				return v, nil
 			}
@@ -103,12 +104,46 @@ func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
 		return scope.evalBinary(node)
 
 	case *ast.BasicLit:
-		return newConstant(constant.MakeFromLiteral(node.Value, node.Kind, 0), scope.Thread), nil
+		return newConstant(constant.MakeFromLiteral(node.Value, node.Kind, 0), scope.Mem), nil
 
 	default:
 		return nil, fmt.Errorf("expression %T not implemented", t)
 
 	}
+}
+
+func (scope *Scope) Goroutine() (*Variable, error) {
+	if scope.arch.GStructOffset() == 0 {
+		// GetG was called through SwitchThread / updateThreadList during initialization
+		// thread.dbp.arch isn't setup yet (it needs a CurrentThread to read global variables from)
+		return nil, fmt.Errorf("g struct offset not initialized")
+	}
+
+	gaddrbs, err := scope.Mem.Read(uint64(scope.tls+scope.arch.GStructOffset()), scope.arch.PtrSize())
+	if err != nil {
+		return nil, err
+	}
+	gaddr := uintptr(binary.LittleEndian.Uint64(gaddrbs))
+	return scope.ParseGoroutine(gaddr, runtime.GOOS == "windnows")
+}
+
+func (scope *Scope) ParseGoroutine(gaddr uintptr, deref bool) (*Variable, error) {
+	typ, err := scope.dwarf.FindType("runtime.g")
+	if err != nil {
+		return nil, err
+	}
+
+	name := ""
+
+	// On Windows, the value at TLS()+GStructOffset() is a
+	// pointer to the G struct.
+	if runtime.GOOS == "windows" {
+		typ = &dwarf.PtrType{dwarf.CommonType{int64(scope.arch.PtrSize()), "", reflect.Ptr, 0}, typ}
+	} else {
+		name = "runtime.curg"
+	}
+
+	return scope.newVariable(name, gaddr, typ), nil
 }
 
 func exprToString(t ast.Expr) string {
@@ -118,8 +153,8 @@ func exprToString(t ast.Expr) string {
 }
 
 // Eval type cast expressions
-func (scope *EvalScope) evalTypeCast(node *ast.CallExpr) (*Variable, error) {
-	argv, err := scope.evalAST(node.Args[0])
+func (scope *Scope) evalTypeCast(node *ast.CallExpr) (*Variable, error) {
+	argv, err := scope.EvalAST(node.Args[0])
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +174,7 @@ func (scope *EvalScope) evalTypeCast(node *ast.CallExpr) (*Variable, error) {
 		fnnode = p.X
 	}
 
-	styp, err := scope.Thread.dbp.findTypeExpr(fnnode)
+	styp, err := scope.dwarf.FindTypeExpr(fnnode)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +182,7 @@ func (scope *EvalScope) evalTypeCast(node *ast.CallExpr) (*Variable, error) {
 
 	converr := fmt.Errorf("can not convert %q to %s", exprToString(node.Args[0]), typ.String())
 
-	v := newVariable("", 0, styp, scope.Thread.dbp, scope.Thread)
+	v := NewVariable("", 0, styp, scope.arch, scope.Mem, scope.dwarf)
 	v.loaded = true
 
 	switch ttyp := typ.(type) {
@@ -235,7 +270,7 @@ func convertInt(n uint64, signed bool, size int64) uint64 {
 	return uint64(binary.BigEndian.Uint64(buf))
 }
 
-func (scope *EvalScope) evalBuiltinCall(node *ast.CallExpr) (*Variable, error) {
+func (scope *Scope) evalBuiltinCall(node *ast.CallExpr) (*Variable, error) {
 	fnnode, ok := node.Fun.(*ast.Ident)
 	if !ok {
 		return nil, fmt.Errorf("function calls are not supported")
@@ -244,7 +279,7 @@ func (scope *EvalScope) evalBuiltinCall(node *ast.CallExpr) (*Variable, error) {
 	args := make([]*Variable, len(node.Args))
 
 	for i := range node.Args {
-		v, err := scope.evalAST(node.Args[i])
+		v, err := scope.EvalAST(node.Args[i])
 		if err != nil {
 			return nil, err
 		}
@@ -430,10 +465,10 @@ func realBuiltin(args []*Variable, nodeargs []ast.Expr) (*Variable, error) {
 }
 
 // Evaluates identifier expressions
-func (scope *EvalScope) evalIdent(node *ast.Ident) (*Variable, error) {
+func (scope *Scope) evalIdent(node *ast.Ident) (*Variable, error) {
 	switch node.Name {
 	case "true", "false":
-		return newConstant(constant.MakeBool(node.Name == "true"), scope.Thread), nil
+		return newConstant(constant.MakeBool(node.Name == "true"), scope.Mem), nil
 	case "nil":
 		return nilVariable, nil
 	}
@@ -452,7 +487,7 @@ func (scope *EvalScope) evalIdent(node *ast.Ident) (*Variable, error) {
 		return v, nil
 	}
 	// if it's not a local variable then it could be a package variable w/o explicit package name
-	_, _, fn := scope.Thread.dbp.PCToLine(scope.PC)
+	_, _, fn := scope.dwarf.PCToLine(scope.PC)
 	if fn != nil {
 		if v, err = scope.packageVarAddr(fn.PackageName() + "." + node.Name); err == nil {
 			v.Name = node.Name
@@ -463,8 +498,8 @@ func (scope *EvalScope) evalIdent(node *ast.Ident) (*Variable, error) {
 }
 
 // Evaluates expressions <subexpr>.<field name> where subexpr is not a package name
-func (scope *EvalScope) evalStructSelector(node *ast.SelectorExpr) (*Variable, error) {
-	xv, err := scope.evalAST(node.X)
+func (scope *Scope) evalStructSelector(node *ast.SelectorExpr) (*Variable, error) {
+	xv, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -472,8 +507,8 @@ func (scope *EvalScope) evalStructSelector(node *ast.SelectorExpr) (*Variable, e
 }
 
 // Evaluates expressions <subexpr>.(<type>)
-func (scope *EvalScope) evalTypeAssert(node *ast.TypeAssertExpr) (*Variable, error) {
-	xv, err := scope.evalAST(node.X)
+func (scope *Scope) evalTypeAssert(node *ast.TypeAssertExpr) (*Variable, error) {
+	xv, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -490,7 +525,7 @@ func (scope *EvalScope) evalTypeAssert(node *ast.TypeAssertExpr) (*Variable, err
 	if xv.Children[0].Addr == 0 {
 		return nil, fmt.Errorf("interface conversion: %s is nil, not %s", xv.DwarfType.String(), exprToString(node.Type))
 	}
-	typ, err := scope.Thread.dbp.findTypeExpr(node.Type)
+	typ, err := scope.dwarf.FindTypeExpr(node.Type)
 	if err != nil {
 		return nil, err
 	}
@@ -501,8 +536,8 @@ func (scope *EvalScope) evalTypeAssert(node *ast.TypeAssertExpr) (*Variable, err
 }
 
 // Evaluates expressions <subexpr>[<subexpr>] (subscript access to arrays, slices and maps)
-func (scope *EvalScope) evalIndex(node *ast.IndexExpr) (*Variable, error) {
-	xev, err := scope.evalAST(node.X)
+func (scope *Scope) evalIndex(node *ast.IndexExpr) (*Variable, error) {
+	xev, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +545,7 @@ func (scope *EvalScope) evalIndex(node *ast.IndexExpr) (*Variable, error) {
 		return nil, xev.Unreadable
 	}
 
-	idxev, err := scope.evalAST(node.Index)
+	idxev, err := scope.EvalAST(node.Index)
 	if err != nil {
 		return nil, err
 	}
@@ -540,8 +575,8 @@ func (scope *EvalScope) evalIndex(node *ast.IndexExpr) (*Variable, error) {
 
 // Evaluates expressions <subexpr>[<subexpr>:<subexpr>]
 // HACK: slicing a map expression with [0:0] will return the whole map
-func (scope *EvalScope) evalReslice(node *ast.SliceExpr) (*Variable, error) {
-	xev, err := scope.evalAST(node.X)
+func (scope *Scope) evalReslice(node *ast.SliceExpr) (*Variable, error) {
+	xev, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +587,7 @@ func (scope *EvalScope) evalReslice(node *ast.SliceExpr) (*Variable, error) {
 	var low, high int64
 
 	if node.Low != nil {
-		lowv, err := scope.evalAST(node.Low)
+		lowv, err := scope.EvalAST(node.Low)
 		if err != nil {
 			return nil, err
 		}
@@ -565,7 +600,7 @@ func (scope *EvalScope) evalReslice(node *ast.SliceExpr) (*Variable, error) {
 	if node.High == nil {
 		high = xev.Len
 	} else {
-		highv, err := scope.evalAST(node.High)
+		highv, err := scope.EvalAST(node.High)
 		if err != nil {
 			return nil, err
 		}
@@ -597,8 +632,8 @@ func (scope *EvalScope) evalReslice(node *ast.SliceExpr) (*Variable, error) {
 }
 
 // Evaluates a pointer dereference expression: *<subexpr>
-func (scope *EvalScope) evalPointerDeref(node *ast.StarExpr) (*Variable, error) {
-	xev, err := scope.evalAST(node.X)
+func (scope *Scope) evalPointerDeref(node *ast.StarExpr) (*Variable, error) {
+	xev, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -623,8 +658,8 @@ func (scope *EvalScope) evalPointerDeref(node *ast.StarExpr) (*Variable, error) 
 }
 
 // Evaluates expressions &<subexpr>
-func (scope *EvalScope) evalAddrOf(node *ast.UnaryExpr) (*Variable, error) {
-	xev, err := scope.evalAST(node.X)
+func (scope *Scope) evalAddrOf(node *ast.UnaryExpr) (*Variable, error) {
+	xev, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +670,7 @@ func (scope *EvalScope) evalAddrOf(node *ast.UnaryExpr) (*Variable, error) {
 	xev.OnlyAddr = true
 
 	typename := "*" + xev.DwarfType.String()
-	rv := scope.newVariable("", 0, &dwarf.PtrType{CommonType: dwarf.CommonType{ByteSize: int64(scope.Thread.dbp.arch.PtrSize()), Name: typename}, Type: xev.DwarfType})
+	rv := scope.newVariable("", 0, &dwarf.PtrType{CommonType: dwarf.CommonType{ByteSize: int64(scope.arch.PtrSize()), Name: typename}, Type: xev.DwarfType})
 	rv.Children = []Variable{*xev}
 	rv.loaded = true
 
@@ -679,8 +714,8 @@ func constantCompare(op token.Token, x, y constant.Value) (r bool, err error) {
 }
 
 // Evaluates expressions: -<subexpr> and +<subexpr>
-func (scope *EvalScope) evalUnary(node *ast.UnaryExpr) (*Variable, error) {
-	xv, err := scope.evalAST(node.X)
+func (scope *Scope) evalUnary(node *ast.UnaryExpr) (*Variable, error) {
+	xv, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
@@ -768,18 +803,18 @@ func negotiateTypeNil(op token.Token, v *Variable) error {
 	}
 }
 
-func (scope *EvalScope) evalBinary(node *ast.BinaryExpr) (*Variable, error) {
+func (scope *Scope) evalBinary(node *ast.BinaryExpr) (*Variable, error) {
 	switch node.Op {
 	case token.INC, token.DEC, token.ARROW:
 		return nil, fmt.Errorf("operator %s not supported", node.Op.String())
 	}
 
-	xv, err := scope.evalAST(node.X)
+	xv, err := scope.EvalAST(node.X)
 	if err != nil {
 		return nil, err
 	}
 
-	yv, err := scope.evalAST(node.Y)
+	yv, err := scope.EvalAST(node.Y)
 	if err != nil {
 		return nil, err
 	}
@@ -1119,4 +1154,13 @@ func (v *Variable) reslice(low int64, high int64) (*Variable, error) {
 	r.fieldType = v.fieldType
 
 	return r, nil
+}
+
+// IsNilErr is returned when a variable is nil.
+type IsNilErr struct {
+	name string
+}
+
+func (err *IsNilErr) Error() string {
+	return fmt.Sprintf("%s is nil", err.name)
 }

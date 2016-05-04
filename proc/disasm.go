@@ -1,8 +1,10 @@
 package proc
 
+import "github.com/derekparker/delve/pkg/location"
+
 type AsmInstruction struct {
-	Loc        Location
-	DestLoc    *Location
+	Loc        location.Location
+	DestLoc    *location.Location
 	Bytes      []byte
 	Breakpoint bool
 	AtPC       bool
@@ -47,8 +49,8 @@ func (thread *Thread) Disassemble(startPC, endPC uint64, currentGoroutine bool) 
 				mem[i] = bp.OriginalData[i]
 			}
 		}
-		file, line, fn := thread.dbp.PCToLine(pc)
-		loc := Location{PC: pc, File: file, Line: line, Fn: fn}
+		file, line, fn := thread.dbp.dwarf.PCToLine(pc)
+		loc := location.New(pc, file, line, fn)
 		inst, err := asmDecode(mem, pc)
 		if err == nil {
 			atpc := currentGoroutine && (curpc == pc)

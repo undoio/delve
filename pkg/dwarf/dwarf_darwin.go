@@ -1,6 +1,7 @@
 package dwarf
 
 import (
+	"debug/gosym"
 	"errors"
 	"fmt"
 
@@ -46,4 +47,34 @@ func parseLine(exe *macho.File) (line.DebugLines, error) {
 		return line.Parse(debugLine), nil
 	}
 	return nil, errors.New("dwarf: could not find __debug_line section in binary")
+}
+
+func parseGoSymbols(exe *macho.File) (*gosym.Table, error) {
+	var (
+		symdat  []byte
+		pclndat []byte
+		err     error
+	)
+
+	if sec := exe.Section("__gosymtab"); sec != nil {
+		symdat, err = sec.Data()
+		if err != nil {
+			return nil, fmt.Errorf("dwarf: could not get .gosymtab section: %v", err)
+		}
+	}
+
+	if sec := exe.Section("__gopclntab"); sec != nil {
+		pclndat, err = sec.Data()
+		if err != nil {
+			return nil, fmt.Errorf("dwarf: could not get .gopclntab section: %v", err)
+		}
+	}
+
+	pcln := gosym.NewLineTable(pclndat, exe.Section("__text").Addr)
+	tab, err := gosym.NewTable(symdat, pcln)
+	if err != nil {
+		return fmt.Errorf("dwarf: could not get initialize line table: %v", err)
+	}
+
+	return tab, nil
 }

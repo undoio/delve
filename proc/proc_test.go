@@ -17,10 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/derekparker/delve/pkg/eval"
+	"github.com/derekparker/delve/pkg/goversion"
+	"github.com/derekparker/delve/pkg/stack"
 	protest "github.com/derekparker/delve/proc/test"
 )
 
-var normalLoadConfig = LoadConfig{true, 1, 64, 64, -1}
+var normalLoadConfig = eval.LoadConfig{true, 1, 64, 64, -1}
 
 func init() {
 	runtime.GOMAXPROCS(4)
@@ -101,7 +104,7 @@ func currentPC(p *Process, t *testing.T) uint64 {
 
 func currentLineNumber(p *Process, t *testing.T) (string, int) {
 	pc := currentPC(p, t)
-	f, l, _ := p.symboltab.PCToLine(pc)
+	f, l, _ := p.dwarf.PCToLine(pc)
 
 	return f, l
 }
@@ -180,7 +183,7 @@ func TestHalt(t *testing.T) {
 
 func TestStep(t *testing.T) {
 	withTestProcess("testprog", t, func(p *Process, fixture protest.Fixture) {
-		helloworldfunc := p.symboltab.LookupFunc("main.helloworld")
+		helloworldfunc := p.dwarf.LookupFunc("main.helloworld")
 		helloworldaddr := helloworldfunc.Entry
 
 		_, err := p.SetBreakpoint(helloworldaddr)
@@ -202,7 +205,7 @@ func TestStep(t *testing.T) {
 
 func TestBreakpoint(t *testing.T) {
 	withTestProcess("testprog", t, func(p *Process, fixture protest.Fixture) {
-		helloworldfunc := p.symboltab.LookupFunc("main.helloworld")
+		helloworldfunc := p.dwarf.LookupFunc("main.helloworld")
 		helloworldaddr := helloworldfunc.Entry
 
 		bp, err := p.SetBreakpoint(helloworldaddr)
@@ -221,7 +224,7 @@ func TestBreakpoint(t *testing.T) {
 
 func TestBreakpointInSeperateGoRoutine(t *testing.T) {
 	withTestProcess("testthreads", t, func(p *Process, fixture protest.Fixture) {
-		fn := p.symboltab.LookupFunc("main.anotherthread")
+		fn := p.dwarf.LookupFunc("main.anotherthread")
 		if fn == nil {
 			t.Fatal("No fn exists")
 		}
@@ -241,7 +244,7 @@ func TestBreakpointInSeperateGoRoutine(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		f, l, _ := p.symboltab.PCToLine(pc)
+		f, l, _ := p.dwarf.PCToLine(pc)
 		if f != "testthreads.go" && l != 8 {
 			t.Fatal("Program did not hit breakpoint")
 		}
@@ -259,7 +262,7 @@ func TestBreakpointWithNonExistantFunction(t *testing.T) {
 
 func TestClearBreakpointBreakpoint(t *testing.T) {
 	withTestProcess("testprog", t, func(p *Process, fixture protest.Fixture) {
-		fn := p.symboltab.LookupFunc("main.sleepytime")
+		fn := p.dwarf.LookupFunc("main.sleepytime")
 		bp, err := p.SetBreakpoint(fn.Entry)
 		assertNoError(err, t, "SetBreakpoint()")
 
@@ -327,9 +330,9 @@ func testnext(program string, testcases []nextTest, initialLocation string, t *t
 func TestNextGeneral(t *testing.T) {
 	var testcases []nextTest
 
-	ver, _ := ParseVersionString(runtime.Version())
+	ver, _ := goversion.ParseVersionString(runtime.Version())
 
-	if ver.Major < 0 || ver.AfterOrEqual(GoVersion{1, 7, 0, 0, 0}) {
+	if ver.Major < 0 || ver.AfterOrEqual(goversion.GoVersion{1, 7, 0, 0, 0}) {
 		testcases = []nextTest{
 			{17, 19},
 			{19, 20},
@@ -531,7 +534,7 @@ func TestRuntimeBreakpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, l, _ := p.PCToLine(pc)
+		_, l, _ := p.dwarf.PCToLine(pc)
 		if l != 10 {
 			t.Fatal("did not respect breakpoint")
 		}
@@ -540,7 +543,7 @@ func TestRuntimeBreakpoint(t *testing.T) {
 
 func TestFindReturnAddress(t *testing.T) {
 	withTestProcess("testnextprog", t, func(p *Process, fixture protest.Fixture) {
-		start, _, err := p.symboltab.LineToPC(fixture.Source, 24)
+		start, _, err := p.dwarf.LineToPC(fixture.Source, 24)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -552,11 +555,15 @@ func TestFindReturnAddress(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		addr, err := p.CurrentThread.ReturnAddress()
+		regs, err := p.CurrentThread.Registers()
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, l, _ := p.symboltab.PCToLine(addr)
+		addr, err := stack.ReturnAddress(regs.PC(), regs.SP(), p.dwarf, p.CurrentThread.Mem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, l, _ := p.dwarf.PCToLine(addr)
 		if l != 40 {
 			t.Fatalf("return address not found correctly, expected line 40")
 		}
@@ -566,7 +573,7 @@ func TestFindReturnAddress(t *testing.T) {
 func TestFindReturnAddressTopOfStackFn(t *testing.T) {
 	withTestProcess("testreturnaddress", t, func(p *Process, fixture protest.Fixture) {
 		fnName := "runtime.rt0_go"
-		fn := p.symboltab.LookupFunc(fnName)
+		fn := p.dwarf.LookupFunc(fnName)
 		if fn == nil {
 			t.Fatalf("could not find function %s", fnName)
 		}
@@ -576,8 +583,13 @@ func TestFindReturnAddressTopOfStackFn(t *testing.T) {
 		if err := p.Continue(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := p.CurrentThread.ReturnAddress(); err == nil {
-			t.Fatal("expected error to be returned")
+		regs, err := p.CurrentThread.Registers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = stack.ReturnAddress(regs.PC(), regs.SP(), p.dwarf, p.CurrentThread.Mem)
+		if err != nil {
+			t.Fatal(err)
 		}
 	})
 }
@@ -655,7 +667,7 @@ type loc struct {
 	fn   string
 }
 
-func (l1 *loc) match(l2 Stackframe) bool {
+func (l1 *loc) match(l2 stack.Frame) bool {
 	if l1.line >= 0 {
 		if l1.line != l2.Call.Line {
 			return false
@@ -725,7 +737,7 @@ func TestStacktrace2(t *testing.T) {
 
 }
 
-func stackMatch(stack []loc, locations []Stackframe, skipRuntime bool) bool {
+func stackMatch(stack []loc, locations []stack.Frame, skipRuntime bool) bool {
 	if len(stack) > len(locations) {
 		return false
 	}
@@ -765,7 +777,7 @@ func TestStacktraceGoroutine(t *testing.T) {
 		mainCount := 0
 
 		for i, g := range gs {
-			locations, err := g.Stacktrace(40)
+			locations, err := stack.Trace(40, g.PC, g.SP, g.Dwarf, g.Mem)
 			assertNoError(err, t, "GoroutineStacktrace()")
 
 			if stackMatch(mainStack, locations, false) {
@@ -887,8 +899,8 @@ func TestContinueMulti(t *testing.T) {
 	})
 }
 
-func versionAfterOrEqual(t *testing.T, verStr string, ver GoVersion) {
-	pver, ok := ParseVersionString(verStr)
+func versionAfterOrEqual(t *testing.T, verStr string, ver goversion.GoVersion) {
+	pver, ok := goversion.ParseVersionString(verStr)
 	if !ok {
 		t.Fatalf("Could not parse version string <%s>", verStr)
 	}
@@ -899,12 +911,12 @@ func versionAfterOrEqual(t *testing.T, verStr string, ver GoVersion) {
 }
 
 func TestParseVersionString(t *testing.T) {
-	versionAfterOrEqual(t, "go1.4", GoVersion{1, 4, 0, 0, 0})
-	versionAfterOrEqual(t, "go1.5.0", GoVersion{1, 5, 0, 0, 0})
-	versionAfterOrEqual(t, "go1.4.2", GoVersion{1, 4, 2, 0, 0})
-	versionAfterOrEqual(t, "go1.5beta2", GoVersion{1, 5, -1, 2, 0})
-	versionAfterOrEqual(t, "go1.5rc2", GoVersion{1, 5, -1, 0, 2})
-	ver, ok := ParseVersionString("devel +17efbfc Tue Jul 28 17:39:19 2015 +0000 linux/amd64")
+	versionAfterOrEqual(t, "go1.4", goversion.GoVersion{1, 4, 0, 0, 0})
+	versionAfterOrEqual(t, "go1.5.0", goversion.GoVersion{1, 5, 0, 0, 0})
+	versionAfterOrEqual(t, "go1.4.2", goversion.GoVersion{1, 4, 2, 0, 0})
+	versionAfterOrEqual(t, "go1.5beta2", goversion.GoVersion{1, 5, -1, 2, 0})
+	versionAfterOrEqual(t, "go1.5rc2", goversion.GoVersion{1, 5, -1, 0, 2})
+	ver, ok := goversion.ParseVersionString("devel +17efbfc Tue Jul 28 17:39:19 2015 +0000 linux/amd64")
 	if !ok {
 		t.Fatalf("Could not parse devel version string")
 	}
@@ -939,7 +951,7 @@ func TestProcessReceivesSIGCHLD(t *testing.T) {
 
 func TestIssue239(t *testing.T) {
 	withTestProcess("is sue239", t, func(p *Process, fixture protest.Fixture) {
-		pos, _, err := p.symboltab.LineToPC(fixture.Source, 17)
+		pos, _, err := p.dwarf.LineToPC(fixture.Source, 17)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(pos)
 		assertNoError(err, t, fmt.Sprintf("SetBreakpoint(%d)", pos))
@@ -947,7 +959,7 @@ func TestIssue239(t *testing.T) {
 	})
 }
 
-func evalVariable(p *Process, symbol string) (*Variable, error) {
+func evalVariable(p *Process, symbol string) (*eval.Variable, error) {
 	scope, err := p.CurrentThread.Scope()
 	if err != nil {
 		return nil, err
@@ -1060,7 +1072,7 @@ func TestFrameEvaluation(t *testing.T) {
 		found := make([]bool, 10)
 		for _, g := range gs {
 			frame := -1
-			frames, err := g.Stacktrace(10)
+			frames, err := stack.Trace(10, g.PC, g.SP, g.Dwarf, g.Mem)
 			assertNoError(err, t, "GoroutineStacktrace()")
 			for i := range frames {
 				if frames[i].Call.Fn != nil && frames[i].Call.Fn.Name == "main.agoroutine" {
@@ -1200,7 +1212,7 @@ func TestIssue325(t *testing.T) {
 
 func TestBreakpointCounts(t *testing.T) {
 	withTestProcess("bpcountstest", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 12)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 12)
 		assertNoError(err, t, "LineToPC")
 		bp, err := p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1251,7 +1263,7 @@ func TestBreakpointCountsWithDetection(t *testing.T) {
 	}
 	m := map[int64]int64{}
 	withTestProcess("bpcountstest", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 12)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 12)
 		assertNoError(err, t, "LineToPC")
 		bp, err := p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1348,7 +1360,7 @@ func BenchmarkGoroutinesInfo(b *testing.B) {
 func TestIssue262(t *testing.T) {
 	// Continue does not work when the current breakpoint is set on a NOP instruction
 	withTestProcess("issue262", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 11)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 11)
 		assertNoError(err, t, "LineToPC")
 		_, err = p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1369,7 +1381,7 @@ func TestIssue305(t *testing.T) {
 	// If 'next' hits a breakpoint on the goroutine it's stepping through the temp breakpoints aren't cleared
 	// preventing further use of 'next' command
 	withTestProcess("issue305", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 5)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 5)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1409,7 +1421,7 @@ func BenchmarkLocalVariables(b *testing.B) {
 
 func TestCondBreakpoint(t *testing.T) {
 	withTestProcess("parallel_next", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 9)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 9)
 		assertNoError(err, t, "LineToPC")
 		bp, err := p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1433,7 +1445,7 @@ func TestCondBreakpoint(t *testing.T) {
 
 func TestCondBreakpointError(t *testing.T) {
 	withTestProcess("parallel_next", t, func(p *Process, fixture protest.Fixture) {
-		addr, _, err := p.symboltab.LineToPC(fixture.Source, 9)
+		addr, _, err := p.dwarf.LineToPC(fixture.Source, 9)
 		assertNoError(err, t, "LineToPC")
 		bp, err := p.SetBreakpoint(addr)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1513,7 +1525,7 @@ func TestStepIntoFunction(t *testing.T) {
 func TestIssue384(t *testing.T) {
 	// Crash related to reading uninitialized memory, introduced by the memory prefetching optimization
 	withTestProcess("issue384", t, func(p *Process, fixture protest.Fixture) {
-		start, _, err := p.symboltab.LineToPC(fixture.Source, 13)
+		start, _, err := p.dwarf.LineToPC(fixture.Source, 13)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(start)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1526,14 +1538,16 @@ func TestIssue384(t *testing.T) {
 func TestIssue332_Part1(t *testing.T) {
 	// Next shouldn't step inside a function call
 	withTestProcess("issue332", t, func(p *Process, fixture protest.Fixture) {
-		start, _, err := p.symboltab.LineToPC(fixture.Source, 8)
+		start, _, err := p.dwarf.LineToPC(fixture.Source, 8)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(start)
 		assertNoError(err, t, "SetBreakpoint()")
 		assertNoError(p.Continue(), t, "Continue()")
 		assertNoError(p.Next(), t, "first Next()")
 		locations, err := p.CurrentThread.Stacktrace(2)
-		assertNoError(err, t, "Stacktrace()")
+		if err != nil {
+			t.Fatal(err)
+		}
 		if locations[0].Call.Fn == nil {
 			t.Fatalf("Not on a function")
 		}
@@ -1552,7 +1566,7 @@ func TestIssue332_Part2(t *testing.T) {
 	// which leads to 'next' and 'stack' failing with error "could not find FDE for PC: <garbage>"
 	// because the incorrect FDE data leads to reading the wrong stack address as the return address
 	withTestProcess("issue332", t, func(p *Process, fixture protest.Fixture) {
-		start, _, err := p.symboltab.LineToPC(fixture.Source, 8)
+		start, _, err := p.dwarf.LineToPC(fixture.Source, 8)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(start)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1603,7 +1617,7 @@ func TestIssue396(t *testing.T) {
 func TestIssue414(t *testing.T) {
 	// Stepping until the program exits
 	withTestProcess("math", t, func(p *Process, fixture protest.Fixture) {
-		start, _, err := p.symboltab.LineToPC(fixture.Source, 9)
+		start, _, err := p.dwarf.LineToPC(fixture.Source, 9)
 		assertNoError(err, t, "LineToPC()")
 		_, err = p.SetBreakpoint(start)
 		assertNoError(err, t, "SetBreakpoint()")
@@ -1642,8 +1656,8 @@ func TestPackageVariables(t *testing.T) {
 }
 
 func TestIssue149(t *testing.T) {
-	ver, _ := ParseVersionString(runtime.Version())
-	if ver.Major > 0 && !ver.AfterOrEqual(GoVersion{1, 7, 0, 0, 0}) {
+	ver, _ := goversion.ParseVersionString(runtime.Version())
+	if ver.Major > 0 && !ver.AfterOrEqual(goversion.GoVersion{1, 7, 0, 0, 0}) {
 		return
 	}
 	// setting breakpoint on break statement

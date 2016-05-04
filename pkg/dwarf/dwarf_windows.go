@@ -1,10 +1,10 @@
 package dwarf
 
 import (
+	"debug/gosym"
+	"debug/pe"
 	"errors"
 	"fmt"
-
-	"debug/pe"
 
 	"golang.org/x/debug/dwarf"
 
@@ -76,4 +76,19 @@ func parseDwarf(f *pe.File) (*dwarf.Data, error) {
 
 	abbrev, info, line, str := dat[0], dat[1], dat[2], dat[3]
 	return dwarf.New(abbrev, nil, nil, info, line, nil, nil, str)
+}
+
+func parseGoSymbols(exe *pe.File) (*gosym.Table, error) {
+	_, symdat, pclndat, err := pcln(exe)
+	if err != nil {
+		return nil, fmt.Errorf("dwarf: could not get Go symbols: %v", err)
+	}
+
+	pcln := gosym.NewLineTable(pclndat, uint64(exe.Section(".text").Offset))
+	tab, err := gosym.NewTable(symdat, pcln)
+	if err != nil {
+		return nil, fmt.Errorf("dwarf: could not get initialize line table: %v", err)
+	}
+
+	return tab, nil
 }

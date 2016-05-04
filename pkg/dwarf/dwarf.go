@@ -1,7 +1,13 @@
 package dwarf
 
 import (
+	"bytes"
+	"debug/gosym"
+	"go/ast"
+	"go/printer"
+	"go/token"
 	"reflect"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -17,6 +23,10 @@ type Dwarf struct {
 	Line     line.DebugLines
 	Types    map[string]dwarf.Offset
 	Packages map[string]string
+
+	// We keep this here so we have all debug info
+	// in a single place. Not technically dwarf.
+	symboltab *gosym.Table
 
 	data *dwarf.Data
 }
@@ -38,13 +48,18 @@ func Parse(path string) (*Dwarf, error) {
 	if err != nil {
 		return nil, err
 	}
+	syms, err := parseGoSymbols(exe)
+	if err != nil {
+		return nil, err
+	}
 	rdr := reader.New(d)
 	dw := &Dwarf{
-		Frame:    frame,
-		Line:     line,
-		data:     d,
-		Types:    loadTypes(rdr),
-		Packages: loadPackages(rdr),
+		Frame:     frame,
+		Line:      line,
+		data:      d,
+		Types:     loadTypes(rdr),
+		Packages:  loadPackages(rdr),
+		symboltab: syms,
 	}
 	return dw, nil
 }
@@ -63,6 +78,30 @@ func (d *Dwarf) TypeNamed(name string) (dwarf.Type, error) {
 		return nil, reader.TypeNotFoundErr
 	}
 	return d.data.Type(off)
+}
+
+func (d *Dwarf) PCToLine(pc uint64) (string, int, *gosym.Func) {
+	return d.symboltab.PCToLine(pc)
+}
+
+func (d *Dwarf) PCToFunc(pc uint64) *gosym.Func {
+	return d.symboltab.PCToFunc(pc)
+}
+
+func (d *Dwarf) LineToPC(file string, line int) (uint64, *gosym.Func, error) {
+	return d.symboltab.LineToPC(file, line)
+}
+
+func (d *Dwarf) Funcs() []gosym.Func {
+	return d.symboltab.Funcs
+}
+
+func (d *Dwarf) LookupFunc(name string) *gosym.Func {
+	return d.symboltab.LookupFunc(name)
+}
+
+func (d *Dwarf) Files() map[string]*gosym.Obj {
+	return d.symboltab.Files
 }
 
 func loadTypes(rdr *reader.Reader) map[string]dwarf.Offset {
@@ -120,6 +159,38 @@ func PointerTo(typ dwarf.Type) dwarf.Type {
 	return &dwarf.PtrType{dwarf.CommonType{int64(unsafe.Sizeof(uintptr(1))), "", reflect.Ptr, 0}, typ}
 }
 
+func (d *Dwarf) FindTypeExpr(expr ast.Expr) (dwarf.Type, error) {
+	if lit, islit := expr.(*ast.BasicLit); islit && lit.Kind == token.STRING {
+		// Allow users to specify type names verbatim as quoted
+		// string. Useful as a catch-all workaround for cases where we don't
+		// parse/serialize types correctly or can not resolve package paths.
+		typn, _ := strconv.Unquote(lit.Value)
+		return d.FindType(typn)
+	}
+	expandPackagesInType(d.Packages, expr)
+	if snode, ok := expr.(*ast.StarExpr); ok {
+		// Pointer types only appear in the dwarf informations when
+		// a pointer to the type is used in the target program, here
+		// we create a pointer type on the fly so that the user can
+		// specify a pointer to any variable used in the target program
+		ptyp, err := d.FindTypeExpr(snode.X)
+		if err != nil {
+			return nil, err
+		}
+		return PointerTo(ptyp), nil
+	}
+	return d.FindType(exprToString(expr))
+}
+
+// Do not call this function directly it isn't able to deal correctly with package paths
+func (d *Dwarf) FindType(name string) (dwarf.Type, error) {
+	off, found := d.Types[name]
+	if !found {
+		return nil, reader.TypeNotFoundErr
+	}
+	return d.Type(off)
+}
+
 func complexType(typename string) bool {
 	for _, ch := range typename {
 		switch ch {
@@ -128,4 +199,46 @@ func complexType(typename string) bool {
 		}
 	}
 	return false
+}
+
+func exprToString(t ast.Expr) string {
+	var buf bytes.Buffer
+	printer.Fprint(&buf, token.NewFileSet(), t)
+	return buf.String()
+}
+
+func expandPackagesInType(packages map[string]string, expr ast.Expr) {
+	switch e := expr.(type) {
+	case *ast.ArrayType:
+		expandPackagesInType(packages, e.Elt)
+	case *ast.ChanType:
+		expandPackagesInType(packages, e.Value)
+	case *ast.FuncType:
+		for i := range e.Params.List {
+			expandPackagesInType(packages, e.Params.List[i].Type)
+		}
+		if e.Results != nil {
+			for i := range e.Results.List {
+				expandPackagesInType(packages, e.Results.List[i].Type)
+			}
+		}
+	case *ast.MapType:
+		expandPackagesInType(packages, e.Key)
+		expandPackagesInType(packages, e.Value)
+	case *ast.ParenExpr:
+		expandPackagesInType(packages, e.X)
+	case *ast.SelectorExpr:
+		switch x := e.X.(type) {
+		case *ast.Ident:
+			if path, ok := packages[x.Name]; ok {
+				x.Name = path
+			}
+		default:
+			expandPackagesInType(packages, e.X)
+		}
+	case *ast.StarExpr:
+		expandPackagesInType(packages, e.X)
+	default:
+		// nothing to do
+	}
 }
