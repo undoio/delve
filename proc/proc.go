@@ -22,6 +22,7 @@ import (
 	"github.com/derekparker/delve/pkg/goroutine"
 	"github.com/derekparker/delve/pkg/goversion"
 	"github.com/derekparker/delve/pkg/location"
+	"github.com/derekparker/delve/pkg/memory"
 	"github.com/derekparker/delve/pkg/stack"
 )
 
@@ -309,7 +310,16 @@ func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 
 	for _, g := range allg {
 		if g.ChanRecvBlocked() {
-			ret, err := g.ChanRecvReturnAddr()
+			pc, sp := g.PC, g.SP
+			if g.ThreadID != 0 {
+				th := dbp.Threads[g.ThreadID]
+				regs, err := th.Registers()
+				if err != nil {
+					return 0, err
+				}
+				pc, sp = regs.PC(), regs.SP()
+			}
+			ret, err := g.ChanRecvReturnAddr(pc, sp)
 			if err != nil {
 				if _, ok := err.(stack.NullAddrError); ok {
 					continue
@@ -589,14 +599,16 @@ func (dbp *Process) GoroutinesInfo() ([]*goroutine.G, error) {
 		if err != nil {
 			return nil, err
 		}
-		gvar, err := scope.ParseGoroutine(uintptr(allgptr+(i*uint64(dbp.arch.PtrSize()))), true)
+		addr := uintptr(allgptr + (i * uint64(dbp.arch.PtrSize())))
+		gvar, err := scope.ParseGoroutine(addr, true)
 		if err != nil {
 			return nil, err
 		}
-		g, err := eval.ParseG(gvar, dbp.CurrentThread.ID)
+		g, err := eval.ParseG(gvar, 0)
 		if err != nil {
 			return nil, err
 		}
+		log.Printf("g.ID=%d g.SP=%#v\n", g.ID, g.SP)
 		if thread, allocated := threadg[g.ID]; allocated {
 			loc, err := thread.Location()
 			if err != nil {
@@ -851,15 +863,22 @@ func (dbp *Process) ConvertEvalScope(gid, frame int) (*eval.Scope, error) {
 		return dbp.CurrentThread.Scope()
 	}
 
-	var out eval.Scope
-
+	var mem memory.ReadWriter
 	if g.ThreadID == 0 {
-		out.Mem = dbp.CurrentThread.Mem
+		mem = dbp.CurrentThread.Mem
 	} else {
-		out.Mem = dbp.Threads[g.ThreadID].Mem
+		mem = dbp.Threads[g.ThreadID].Mem
+	}
+	gpc, gsp := g.PC, g.SP
+	if g.ThreadID != 0 {
+		regs, err := dbp.Threads[g.ThreadID].Registers()
+		if err != nil {
+			return nil, err
+		}
+		gpc, gsp = regs.PC(), regs.SP()
 	}
 
-	locs, err := stack.Trace(frame, g.PC, g.SP, dbp.dwarf, out.Mem)
+	locs, err := stack.Trace(frame, gpc, gsp, dbp.dwarf, mem)
 	if err != nil {
 		return nil, err
 	}
@@ -867,10 +886,14 @@ func (dbp *Process) ConvertEvalScope(gid, frame int) (*eval.Scope, error) {
 	if frame >= len(locs) {
 		return nil, fmt.Errorf("Frame %d does not exist in goroutine %d", frame, gid)
 	}
+	regs, err := dbp.CurrentThread.Registers()
+	if err != nil {
+		return nil, err
+	}
 
-	out.PC, out.CFA = locs[frame].Current.PC, locs[frame].CFA
-
-	return &out, nil
+	pc, cfa := locs[frame].Current.PC, locs[frame].CFA
+	out := eval.NewScope(pc, cfa, mem, dbp.dwarf, dbp.arch, regs.TLS())
+	return out, nil
 }
 
 func (dbp *Process) postExit() {

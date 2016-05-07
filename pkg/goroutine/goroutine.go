@@ -67,8 +67,8 @@ func (g *G) ChanRecvBlocked() bool {
 }
 
 // ChanRecvReturnAddr returns the address of the return from a channel read.
-func (g *G) ChanRecvReturnAddr() (uint64, error) {
-	locs, err := stack.Trace(4, g.PC, g.SP, g.Dwarf, g.Mem)
+func (g *G) ChanRecvReturnAddr(pc, sp uint64) (uint64, error) {
+	locs, err := stack.Trace(4, pc, sp, g.Dwarf, g.Mem)
 	if err != nil {
 		return 0, err
 	}

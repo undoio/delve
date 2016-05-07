@@ -588,8 +588,8 @@ func TestFindReturnAddressTopOfStackFn(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err = stack.ReturnAddress(regs.PC(), regs.SP(), p.dwarf, p.CurrentThread.Mem)
-		if err != nil {
-			t.Fatal(err)
+		if err == nil {
+			t.Fatal("Expected error, got none.")
 		}
 	})
 }
@@ -777,8 +777,17 @@ func TestStacktraceGoroutine(t *testing.T) {
 		mainCount := 0
 
 		for i, g := range gs {
-			locations, err := stack.Trace(40, g.PC, g.SP, g.Dwarf, g.Mem)
-			assertNoError(err, t, "GoroutineStacktrace()")
+			pc, sp, dwarf, mem := g.PC, g.SP, g.Dwarf, g.Mem
+			if g.ThreadID != 0 {
+				th := p.Threads[g.ThreadID]
+				regs, err := th.Registers()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pc, sp = regs.PC(), regs.SP()
+			}
+			locations, err := stack.Trace(40, pc, sp, dwarf, mem)
+			assertNoError(err, t, "stack.Trace()")
 
 			if stackMatch(mainStack, locations, false) {
 				mainCount++
@@ -1072,7 +1081,16 @@ func TestFrameEvaluation(t *testing.T) {
 		found := make([]bool, 10)
 		for _, g := range gs {
 			frame := -1
-			frames, err := stack.Trace(10, g.PC, g.SP, g.Dwarf, g.Mem)
+			pc, sp, dwarf, mem := g.PC, g.SP, g.Dwarf, g.Mem
+			if g.ThreadID != 0 {
+				th := p.Threads[g.ThreadID]
+				regs, err := th.Registers()
+				if err != nil {
+					t.Fatal(err)
+				}
+				pc, sp = regs.PC(), regs.SP()
+			}
+			frames, err := stack.Trace(10, pc, sp, dwarf, mem)
 			assertNoError(err, t, "GoroutineStacktrace()")
 			for i := range frames {
 				if frames[i].Call.Fn != nil && frames[i].Call.Fn.Name == "main.agoroutine" {

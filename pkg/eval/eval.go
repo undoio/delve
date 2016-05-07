@@ -124,7 +124,9 @@ func (scope *Scope) Goroutine() (*Variable, error) {
 		return nil, err
 	}
 	gaddr := uintptr(binary.LittleEndian.Uint64(gaddrbs))
-	return scope.ParseGoroutine(gaddr, runtime.GOOS == "windnows")
+	// On Windows, the value at TLS()+GStructOffset() is a
+	// pointer to the G struct.
+	return scope.ParseGoroutine(gaddr, runtime.GOOS == "windows")
 }
 
 func (scope *Scope) ParseGoroutine(gaddr uintptr, deref bool) (*Variable, error) {
@@ -134,10 +136,7 @@ func (scope *Scope) ParseGoroutine(gaddr uintptr, deref bool) (*Variable, error)
 	}
 
 	name := ""
-
-	// On Windows, the value at TLS()+GStructOffset() is a
-	// pointer to the G struct.
-	if runtime.GOOS == "windows" {
+	if deref {
 		typ = &dwarf.PtrType{dwarf.CommonType{int64(scope.arch.PtrSize()), "", reflect.Ptr, 0}, typ}
 	} else {
 		name = "runtime.curg"

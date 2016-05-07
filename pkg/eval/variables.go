@@ -105,10 +105,6 @@ func NewVariable(name string, addr uintptr, dwarfType dwarf.Type, arch arch.Arch
 		dwarf:     dw,
 	}
 
-	if v.Addr == ^uintptr(0) {
-		v.Unreadable = fmt.Errorf("invalid address: %#v", v.Addr)
-	}
-
 	v.RealType = resolveTypedef(v.DwarfType)
 
 	switch t := v.RealType.(type) {

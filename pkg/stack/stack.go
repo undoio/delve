@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/derekparker/delve/pkg/dwarf"
 	"github.com/derekparker/delve/pkg/dwarf/frame"
@@ -34,6 +35,9 @@ type Frame struct {
 // ReturnAddress returns the return address of the function
 // this thread is executing.
 func ReturnAddress(pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) (uint64, error) {
+	if sp == 0 {
+		panic("sp==0")
+	}
 	locations, err := Trace(2, pc, sp, dwarf, mem)
 	if err != nil {
 		return 0, err
@@ -47,6 +51,9 @@ func ReturnAddress(pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) (ui
 // Trace returns the stack trace for thread.
 // Note the locations in the array are return addresses not call addresses.
 func Trace(depth int, pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) ([]Frame, error) {
+	if sp == 0 {
+		panic("sp==0")
+	}
 	return NewIterator(pc, sp, dwarf, mem).unwind(depth)
 }
 
@@ -57,7 +64,7 @@ func (n NullAddrError) Error() string {
 	return "NULL address"
 }
 
-// stackIterator holds information
+// Iterator holds information
 // required to iterate and walk the program
 // stack.
 type Iterator struct {
@@ -71,6 +78,7 @@ type Iterator struct {
 }
 
 func NewIterator(pc, sp uint64, dwarf *dwarf.Dwarf, mem memory.ReadWriter) *Iterator {
+	log.Printf("NewIterator: pc=%#v sp=%#v\n", pc, sp)
 	return &Iterator{pc: pc, sp: sp, top: true, dwarf: dwarf, mem: mem, err: nil, atend: false}
 }
 
@@ -151,6 +159,7 @@ func frameInfo(pc, sp uint64, top bool, dwarf *dwarf.Dwarf, mem memory.ReadWrite
 	}
 	spoffset, retoffset := fde.ReturnAddressOffset(pc)
 	cfa := int64(sp) + spoffset
+	log.Printf("frameInfo: spoffset=%#v retoffset=%#v cfa=%#v sp=%#v\n", spoffset, retoffset, cfa, sp)
 
 	retaddr := uint64(cfa + retoffset)
 	if retaddr == 0 {
@@ -158,6 +167,7 @@ func frameInfo(pc, sp uint64, top bool, dwarf *dwarf.Dwarf, mem memory.ReadWrite
 	}
 	data, err := mem.Read(retaddr, mem.Arch().PtrSize())
 	if err != nil {
+		log.Printf("frameInfo: retaddr=%#v err=%v\n", retaddr, err)
 		return Frame{}, err
 	}
 	r := Frame{Current: location.New(pc, f, l, fn), CFA: cfa, Ret: binary.LittleEndian.Uint64(data)}
