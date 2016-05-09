@@ -175,14 +175,14 @@ func (dbp *Process) findExecutable(path string) (string, error) {
 	return path, nil
 }
 
-func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
+func (dbp *Process) waitForDebugEvent() (th *Thread, ps *ProcessStatus, err error) {
 	var debugEvent _DEBUG_EVENT
 	shouldExit := false
 	for {
 		// Wait for a debug event...
 		err := _WaitForDebugEvent(&debugEvent, syscall.INFINITE)
 		if err != nil {
-			return 0, 0, err
+			return nil, nil, err
 		}
 
 		// ... handle each event kind ...
@@ -194,81 +194,59 @@ func (dbp *Process) waitForDebugEvent() (threadID, exitCode int, err error) {
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
 				if err != nil {
-					return 0, 0, err
+					return
 				}
 			}
 			dbp.os.hProcess = debugInfo.Process
-			_, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
+			th, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
 			if err != nil {
-				return 0, 0, err
+				return
 			}
-			break
 		case _CREATE_THREAD_DEBUG_EVENT:
 			debugInfo := (*_CREATE_THREAD_DEBUG_INFO)(unionPtr)
-			_, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
+			th, err = dbp.addThread(debugInfo.Thread, int(debugEvent.ThreadId), false)
 			if err != nil {
-				return 0, 0, err
+				return
 			}
-			break
 		case _EXIT_THREAD_DEBUG_EVENT:
 			delete(dbp.Threads, int(debugEvent.ThreadId))
-			break
 		case _OUTPUT_DEBUG_STRING_EVENT:
-			//TODO: Handle debug output strings
-			break
+			// TODO: Handle debug output strings
 		case _LOAD_DLL_DEBUG_EVENT:
 			debugInfo := (*_LOAD_DLL_DEBUG_INFO)(unionPtr)
 			hFile := debugInfo.File
 			if hFile != 0 && hFile != syscall.InvalidHandle {
 				err = syscall.CloseHandle(hFile)
 				if err != nil {
-					return 0, 0, err
+					return
 				}
 			}
-			break
-		case _UNLOAD_DLL_DEBUG_EVENT:
-			break
-		case _RIP_EVENT:
-			break
+		case _UNLOAD_DLL_DEBUG_EVENT, _RIP_EVENT:
+			// TODO: Handle this
 		case _EXCEPTION_DEBUG_EVENT:
 			tid := int(debugEvent.ThreadId)
 			dbp.os.breakThread = tid
-			return tid, 0, nil
+			th := dbp.Threads[tid]
+			return th, &ProcessStatus{signal: syscall.SIGTRAP}, nil
 		case _EXIT_PROCESS_DEBUG_EVENT:
 			debugInfo := (*_EXIT_PROCESS_DEBUG_INFO)(unionPtr)
 			exitCode = int(debugInfo.ExitCode)
 			shouldExit = true
+			ps = &ProcessStatus{exited: true, exitStatus: exitCode}
 		default:
-			return 0, 0, fmt.Errorf("unknown debug event code: %d", debugEvent.DebugEventCode)
+			return nil, nil, fmt.Errorf("unknown debug event code: %d", debugEvent.DebugEventCode)
 		}
 
 		// .. and then continue unless we received an event that indicated we should break into debugger.
 		err = _ContinueDebugEvent(debugEvent.ProcessId, debugEvent.ThreadId, _DBG_CONTINUE)
 		if err != nil {
-			return 0, 0, err
+			return nil, nil, err
 		}
 
 		if shouldExit {
-			return 0, exitCode, nil
+			return nil, ps, nil
 		}
 	}
-}
-
-func (dbp *Process) trapWait(pid int) (*Thread, error) {
-	var err error
-	var tid, exitCode int
-	execOnPtraceThread(func() {
-		tid, exitCode, err = dbp.waitForDebugEvent()
-	})
-	if err != nil {
-		return nil, err
-	}
-	if tid == 0 {
-		dbp.postExit()
-		return nil, ProcessExitedError{Pid: dbp.Pid, Status: exitCode}
-	}
-	th := dbp.Threads[tid]
-	return th, nil
 }
 
 func (dbp *Process) loadProcessInformation() {

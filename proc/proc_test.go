@@ -6,6 +6,8 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +26,9 @@ var normalLoadConfig = LoadConfig{true, 1, 64, 64, -1}
 func init() {
 	runtime.GOMAXPROCS(4)
 	os.Setenv("GOMAXPROCS", "4")
+	if os.Getenv("DEBUG") == "" {
+		log.SetOutput(ioutil.Discard)
+	}
 }
 
 func TestMain(m *testing.M) {
@@ -123,11 +128,14 @@ func TestExitAfterContinue(t *testing.T) {
 	withTestProcess("continuetestprog", t, func(p *Process, fixture protest.Fixture) {
 		_, err := setFunctionBreakpoint(p, "main.sayhi")
 		assertNoError(err, t, "setFunctionBreakpoint()")
+		fmt.Println("FIRST CONTINUE")
 		assertNoError(p.Continue(), t, "First Continue()")
+		// bp.Clear(p.CurrentThread)
+		fmt.Println("SECOND CONTINUE")
 		err = p.Continue()
 		pe, ok := err.(ProcessExitedError)
 		if !ok {
-			t.Fatalf("Continue() returned unexpected error type %s", pe)
+			t.Fatalf("Continue() returned unexpected error type %v", err)
 		}
 		if pe.Status != 0 {
 			t.Errorf("Unexpected error status: %d", pe.Status)

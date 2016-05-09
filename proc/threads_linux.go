@@ -2,6 +2,8 @@ package proc
 
 import (
 	"fmt"
+	"log"
+	"syscall"
 
 	sys "golang.org/x/sys/unix"
 )
@@ -20,7 +22,7 @@ func (t *Thread) halt() (err error) {
 		err = fmt.Errorf("halt err %s on thread %d", err, t.ID)
 		return
 	}
-	_, _, err = t.dbp.wait(t.ID, 0)
+	_, _, err = wait(t.dbp, t.ID, 0)
 	if err != nil {
 		err = fmt.Errorf("wait err %s on thread %d", err, t.ID)
 		return
@@ -38,6 +40,7 @@ func (t *Thread) resume() error {
 }
 
 func (t *Thread) resumeWithSig(sig int) (err error) {
+	log.Printf("resuming thread %d with signal %s\n", t.ID, syscall.Signal(sig))
 	t.running = true
 	err = PtraceCont(t.ID, sig)
 	return
@@ -49,11 +52,11 @@ func (t *Thread) singleStep() (err error) {
 		if err != nil {
 			return err
 		}
-		wpid, status, err := t.dbp.wait(t.ID, 0)
+		th, status, err := wait(t.dbp, t.ID, 0)
 		if err != nil {
 			return err
 		}
-		if (status == nil || status.Exited()) && wpid == t.dbp.Pid {
+		if (status == nil || status.Exited()) && th.ID == t.dbp.Pid {
 			t.dbp.postExit()
 			rs := 0
 			if status != nil {
@@ -61,7 +64,7 @@ func (t *Thread) singleStep() (err error) {
 			}
 			return ProcessExitedError{Pid: t.dbp.Pid, Status: rs}
 		}
-		if wpid == t.ID && status.StopSignal() == sys.SIGTRAP {
+		if th.ID == t.ID && status.Signal() == sys.SIGTRAP {
 			return nil
 		}
 	}

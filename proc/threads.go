@@ -21,7 +21,6 @@ import (
 // on this thread.
 type Thread struct {
 	ID                       int         // Thread ID or mach port
-	Status                   *WaitStatus // Status returned from last wait call
 	CurrentBreakpoint        *Breakpoint // Breakpoint thread is currently stopped at
 	BreakpointConditionMet   bool        // Output of evaluating the breakpoint's condition
 	BreakpointConditionError error       // Error evaluating the breakpoint's condition

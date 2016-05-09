@@ -129,8 +129,8 @@ func (dbp *Process) Kill() error {
 	for _, th := range dbp.Threads {
 		C.resume_thread(th.os.threadAct)
 	}
-	_, err := dbp.trapWait(-1)
-	if _, ok := err.(ProcessExitedError); !ok {
+	_, ws, err := dbp.Wait()
+	if !ws.Exited() {
 		return errors.New("process did not exit")
 	}
 	selfTask := C.ipc_space_t(C.mach_task())
@@ -219,49 +219,7 @@ func (dbp *Process) findExecutable(path string) (string, error) {
 	return path, nil
 }
 
-func (dbp *Process) trapWait(pid int) (*Thread, error) {
-	for {
-		var hdr C.mach_msg_header_t
-		var sig C.int
-		port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(0))
-		th, ok := dbp.Threads[int(port)]
-		if ok {
-			th.os.msgStop = true
-			th.os.hdr = hdr
-			th.os.sig = sig
-		}
-
-		switch port {
-		case dbp.os.notificationPort:
-			_, status, err := dbp.wait(dbp.Pid, 0)
-			if err != nil {
-				return nil, err
-			}
-			dbp.postExit()
-			return nil, ProcessExitedError{Pid: dbp.Pid, Status: status.ExitStatus()}
-
-		case C.MACH_RCV_INTERRUPTED:
-			if !dbp.halt {
-				// Call trapWait again, it seems
-				// MACH_RCV_INTERRUPTED is emitted before
-				// process natural death _sometimes_.
-				continue
-			}
-			return th, nil
-
-		case 0:
-			return nil, fmt.Errorf("error while waiting for task")
-		}
-
-		// Since we cannot be notified of new threads on OS X
-		// this is as good a time as any to check for them.
-		dbp.updateThreadList()
-		_, err := dbp.drainPendingMesages()
-		return th, err
-	}
-}
-
-func (dbp *Process) drainPendingMesages() ([]int, error) {
+func drainPendingMesages(dbp *Process) ([]int, error) {
 	ports := make([]int, 0, len(dbp.Threads))
 	for {
 		var hdr C.mach_msg_header_t
@@ -305,10 +263,37 @@ func (dbp *Process) loadProcessInformation() {
 	return
 }
 
-func (dbp *Process) wait(pid, options int) (int, *sys.WaitStatus, error) {
-	var status sys.WaitStatus
-	wpid, err := sys.Wait4(pid, &status, options, nil)
-	return wpid, &status, err
+func wait(dbp *Process, pid, options int) (*Thread, *ProcessStatus, error) {
+	var hdr C.mach_msg_header_t
+	var sig C.int
+	port := C.mach_port_wait(dbp.os.portSet, &hdr, &sig, C.int(0))
+	th, ok := dbp.Threads[int(port)]
+	if ok {
+		th.os.msgStop = true
+		th.os.hdr = hdr
+		th.os.sig = sig
+	}
+	switch port {
+	case dbp.os.notificationPort:
+		return dbp.Mourn()
+	case C.MACH_RCV_INTERRUPTED: // TODO(derekparker) is this necessary?
+		if !dbp.halt {
+			// Call wait again, it seems
+			// MACH_RCV_INTERRUPTED is emitted before
+			// process natural death _sometimes_.
+			continue
+		}
+		return th, nil
+
+	case 0:
+		return nil, fmt.Errorf("error while waiting for task")
+	}
+	ps := &ProcessStatus{exited: false, signal: syscall.Signal(int(sig))}
+	// Since we cannot be notified of new threads on OS X
+	// this is as good a time as any to check for them.
+	dbp.updateThreadList()
+	_, err := drainPendingMesages(dbp)
+	return th, ps, err
 }
 
 func killProcess(pid int) error {

@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/debug/dwarf"
 
@@ -176,7 +177,7 @@ func (dbp *Process) CurrentLocation() (*Location, error) {
 // sends SIGSTOP to all threads.
 func (dbp *Process) RequestManualStop() error {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{}
 	}
 	dbp.halt = true
 	return dbp.requestManualStop()
@@ -187,7 +188,7 @@ func (dbp *Process) RequestManualStop() error {
 // ptrace actions needing the thread to be in a signal-delivery-stop.
 func (dbp *Process) SetBreakpoint(addr uint64) (*Breakpoint, error) {
 	if dbp.exited {
-		return nil, &ProcessExitedError{}
+		return nil, ProcessExitedError{}
 	}
 	return dbp.setBreakpoint(dbp.CurrentThread.ID, addr, false)
 }
@@ -200,7 +201,7 @@ func (dbp *Process) SetTempBreakpoint(addr uint64) (*Breakpoint, error) {
 // ClearBreakpoint clears the breakpoint at addr.
 func (dbp *Process) ClearBreakpoint(addr uint64) (*Breakpoint, error) {
 	if dbp.exited {
-		return nil, &ProcessExitedError{}
+		return nil, ProcessExitedError{}
 	}
 	bp, ok := dbp.FindBreakpoint(addr)
 	if !ok {
@@ -216,15 +217,10 @@ func (dbp *Process) ClearBreakpoint(addr uint64) (*Breakpoint, error) {
 	return bp, nil
 }
 
-// Status returns the status of the current main thread context.
-func (dbp *Process) Status() *WaitStatus {
-	return dbp.CurrentThread.Status
-}
-
 // Next continues execution until the next source line.
 func (dbp *Process) Next() (err error) {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{}
 	}
 	for i := range dbp.Breakpoints {
 		if dbp.Breakpoints[i].Temp {
@@ -281,6 +277,14 @@ func (dbp *Process) Next() (err error) {
 	return dbp.Continue()
 }
 
+func (dbp *Process) Wait() (*Thread, *ProcessStatus, error) {
+	_, f, l, _ := runtime.Caller(1)
+	log.Printf("begin wait, called from %s:%d\n", f, l)
+	th, s, err := wait(dbp, -dbp.Pid, 0)
+	log.Println("wait finished", s, err)
+	return th, s, err
+}
+
 func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 	var count int
 	allg, err := dbp.GoroutinesInfo()
@@ -316,67 +320,85 @@ func (dbp *Process) setChanRecvBreakpoints() (int, error) {
 // or is otherwise stopped.
 func (dbp *Process) Continue() error {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{Pid: dbp.Pid}
 	}
+	log.Println("continuing")
 	for {
+		dbp.allGCache = nil
 		if err := dbp.resume(); err != nil {
 			return err
 		}
-
-		var trapthread *Thread
-		var err error
-
-		dbp.run(func() error {
-			trapthread, err = dbp.trapWait(-1)
-			return nil
-		})
+		for _, th := range dbp.Threads {
+			th.CurrentBreakpoint = nil
+			th.BreakpointConditionMet = false
+			th.BreakpointConditionError = nil
+		}
+		th, s, err := dbp.Wait()
 		if err != nil {
 			return err
+		}
+		if s.Exited() {
+			dbp.exited = true
+			return ProcessExitedError{Pid: dbp.Pid, Status: s.ExitStatus()}
 		}
 		if err := dbp.Halt(); err != nil {
 			return dbp.exitGuard(err)
 		}
-		if err := dbp.setCurrentBreakpoints(trapthread); err != nil {
-			return err
-		}
-		if err := dbp.pickCurrentThread(trapthread); err != nil {
-			return err
-		}
-
-		switch {
-		case dbp.CurrentThread.CurrentBreakpoint == nil:
+		switch s.Signal() {
+		case syscall.SIGTRAP:
 			if dbp.halt {
+				dbp.halt = false
 				return nil
 			}
-			// runtime.Breakpoint or manual stop
-			if dbp.CurrentThread.onRuntimeBreakpoint() {
-				for i := 0; i < 2; i++ {
-					if err = dbp.CurrentThread.StepInstruction(); err != nil {
-						return err
+			log.Println("continue: handling SIGTRAP")
+			// Handle breakpoint.
+			if err := dbp.setCurrentBreakpoints(th); err != nil {
+				return err
+			}
+			if err := dbp.pickCurrentThread(th); err != nil {
+				return err
+			}
+			switch {
+			case dbp.CurrentThread.CurrentBreakpoint == nil:
+				// runtime.Breakpoint or manual stop
+				if dbp.halt {
+					return nil
+				}
+				if dbp.CurrentThread.onRuntimeBreakpoint() {
+					for i := 0; i < 2; i++ {
+						if err = dbp.CurrentThread.StepInstruction(); err != nil {
+							return err
+						}
 					}
 				}
-			}
-			return dbp.conditionErrors()
-		case dbp.CurrentThread.onTriggeredTempBreakpoint():
-			err := dbp.ClearTempBreakpoints()
-			if err != nil {
-				return err
-			}
-			return dbp.conditionErrors()
-		case dbp.CurrentThread.onTriggeredBreakpoint():
-			onNextGoroutine, err := dbp.CurrentThread.onNextGoroutine()
-			if err != nil {
-				return err
-			}
-			if onNextGoroutine {
+				return dbp.conditionErrors()
+			case dbp.CurrentThread.onTriggeredTempBreakpoint():
 				err := dbp.ClearTempBreakpoints()
 				if err != nil {
 					return err
 				}
+				return dbp.conditionErrors()
+			case dbp.CurrentThread.onTriggeredBreakpoint():
+				onNextGoroutine, err := dbp.CurrentThread.onNextGoroutine()
+				if err != nil {
+					return err
+				}
+				if onNextGoroutine {
+					err := dbp.ClearTempBreakpoints()
+					if err != nil {
+						return err
+					}
+				}
+				return dbp.conditionErrors()
+			default:
+				// not a manual stop, not on runtime.Breakpoint, not on a breakpoint, just repeat
 			}
-			return dbp.conditionErrors()
 		default:
-			// not a manual stop, not on runtime.Breakpoint, not on a breakpoint, just repeat
+			// TODO(derekparker) alert user of signals.
+			log.Printf("continue: inferior received signal %s\n", s.Signal())
+			if th != nil {
+				th.resumeWithSig(int(s.Signal()))
+			}
 		}
 	}
 }
@@ -486,7 +508,7 @@ func (dbp *Process) StepInstruction() (err error) {
 // SwitchThread changes from current thread to the thread specified by `tid`.
 func (dbp *Process) SwitchThread(tid int) error {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{}
 	}
 	if th, ok := dbp.Threads[tid]; ok {
 		dbp.CurrentThread = th
@@ -500,7 +522,7 @@ func (dbp *Process) SwitchThread(tid int) error {
 // running the specified goroutine.
 func (dbp *Process) SwitchGoroutine(gid int) error {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{}
 	}
 	g, err := dbp.FindGoroutine(gid)
 	if err != nil {
@@ -521,7 +543,7 @@ func (dbp *Process) SwitchGoroutine(gid int) error {
 // Delve cares about from the internal runtime G structure.
 func (dbp *Process) GoroutinesInfo() ([]*G, error) {
 	if dbp.exited {
-		return nil, &ProcessExitedError{}
+		return nil, ProcessExitedError{}
 	}
 	if dbp.allGCache != nil {
 		return dbp.allGCache, nil
@@ -594,7 +616,7 @@ func (dbp *Process) GoroutinesInfo() ([]*G, error) {
 // Halt stops all threads.
 func (dbp *Process) Halt() (err error) {
 	if dbp.exited {
-		return &ProcessExitedError{}
+		return ProcessExitedError{}
 	}
 	for _, th := range dbp.Threads {
 		if err := th.Halt(); err != nil {
@@ -657,7 +679,7 @@ func initializeDebugProcess(dbp *Process, path string, attach bool) (*Process, e
 		if err != nil {
 			return nil, err
 		}
-		_, _, err = dbp.wait(dbp.Pid, 0)
+		_, _, err = dbp.Wait()
 		if err != nil {
 			return nil, err
 		}
@@ -789,7 +811,7 @@ func (dbp *Process) FindGoroutine(gid int) (*G, error) {
 // specified goroutine ID and stack frame.
 func (dbp *Process) ConvertEvalScope(gid, frame int) (*EvalScope, error) {
 	if dbp.exited {
-		return nil, &ProcessExitedError{}
+		return nil, ProcessExitedError{}
 	}
 	g, err := dbp.FindGoroutine(gid)
 	if err != nil {
