@@ -1,4 +1,4 @@
-.DEFAULT_GOAL=test
+.DEFAULT_GOAL=check-all
 UNAME=$(shell uname)
 PREFIX=github.com/derekparker/delve
 GOPATH=$(shell go env GOPATH)
@@ -58,6 +58,13 @@ else
 endif
 endif
 
+update-docs:
+	@go run ./scripts/gen-cli-docs.go
+	@go run ./scripts/gen-usage-docs.go
+
+check-docs:
+	@scripts/check-docs.sh
+
 test: check-cert
 ifeq "$(TRAVIS)" "true"
 ifdef DARWIN
@@ -91,6 +98,8 @@ ifneq "$(shell which rr 2>/dev/null)" ""
 	go test $(TEST_FLAGS) $(BUILD_FLAGS) $(PREFIX)/pkg/terminal -backend=rr
 endif
 
+check-all: check-docs test
+
 test-proc-run:
 	go test $(TEST_FLAGS) $(BUILD_FLAGS) -test.v -test.run="$(RUN)" -backend=$(BACKEND) $(PREFIX)/pkg/proc
 
@@ -101,4 +110,4 @@ vendor: glide.yaml
 	@glide up -v
 	@glide-vc --use-lock-file --no-tests --only-code
 
-.PHONY: vendor test-integration-run test-proc-run test check-cert install build
+.PHONY: vendor test-integration-run test-proc-run test check-cert install build update-docs check-docs check-all

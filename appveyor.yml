@@ -22,4 +22,4 @@ cache: C:\mingw64
 build_script:
 - mingw32-make install
 test_script:
-- mingw32-make test
+- mingw32-make check-all
