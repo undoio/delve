@@ -23,6 +23,8 @@
 //    macOS.
 //  * mozilla rr: a stub that records the full execution of a program
 //    and can then play it back.
+//  * undo: a stub that records the full execution of a program
+//    and can then play it back.
 //
 // Implementations of the protocol vary wildly between stubs, while there is
 // a command to query the stub about supported features (qSupported) this
@@ -76,6 +78,7 @@ import (
 	"sync"
 	"time"
 
+	isatty "github.com/mattn/go-isatty"
 	"github.com/undoio/delve/pkg/dwarf/op"
 	"github.com/undoio/delve/pkg/elfwriter"
 	"github.com/undoio/delve/pkg/logflags"
@@ -83,7 +86,6 @@ import (
 	"github.com/undoio/delve/pkg/proc/internal/ebpf"
 	"github.com/undoio/delve/pkg/proc/linutil"
 	"github.com/undoio/delve/pkg/proc/macutil"
-	isatty "github.com/mattn/go-isatty"
 )
 
 const (
@@ -164,6 +166,9 @@ type gdbProcess struct {
 	waitChan chan *os.ProcessState
 
 	onDetach func() // called after a successful detach
+
+	localCheckpointLastId int
+	localCheckpoints      map[int]proc.Checkpoint
 }
 
 var _ proc.RecordingManipulationInternal = &gdbProcess{}
@@ -230,13 +235,15 @@ func newProcess(process *os.Process) *gdbProcess {
 			goarch:              runtime.GOARCH,
 			goos:                runtime.GOOS,
 		},
-		threads:        make(map[int]*gdbThread),
-		bi:             proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
-		regnames:       new(gdbRegnames),
-		breakpoints:    proc.NewBreakpointMap(),
-		gcmdok:         true,
-		threadStopInfo: true,
-		process:        process,
+		threads:               make(map[int]*gdbThread),
+		bi:                    proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
+		regnames:              new(gdbRegnames),
+		breakpoints:           proc.NewBreakpointMap(),
+		gcmdok:                true,
+		threadStopInfo:        true,
+		process:               process,
+		localCheckpointLastId: 1,
+		localCheckpoints:      make(map[int]proc.Checkpoint),
 	}
 
 	switch p.bi.Arch.Name {
@@ -1034,6 +1041,16 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 		return nil, proc.ErrNotRecorded
 	}
 
+	// Is this a checkpoint on a server using local checkpoints?
+	if len(pos) > 1 && pos[:1] == "c" && p.conn.isUndoServer {
+		cpid, _ := strconv.Atoi(pos[1:])
+		checkpoint, exists := p.localCheckpoints[cpid]
+		if !exists {
+			return nil, errors.New("Checkpoint not found")
+		}
+		pos = checkpoint.When
+	}
+
 	p.exited = false
 	p.almostExited = false
 
@@ -1050,9 +1067,11 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 
 	// for some reason we have to send a vCont;c after a vRun to make rr behave
 	// properly, because that's what gdb does.
-	_, err = p.conn.resume(cctx, nil, nil)
-	if err != nil {
-		return nil, err
+	if !p.conn.isUndoServer {
+		_, err = p.conn.resume(cctx, nil, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = p.updateThreadList(&threadUpdater{p: p})
@@ -1069,17 +1088,27 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 	return p.currentThread, p.setCurrentBreakpoints()
 }
 
-// When executes the 'when' command for the Mozilla RR backend.
+// When executes the 'when' command for the Mozilla RR/Undo backends.
 // This command will return rr's internal event number.
 func (p *gdbProcess) When() (string, error) {
 	if p.tracedir == "" {
 		return "", proc.ErrNotRecorded
 	}
-	event, err := p.conn.qRRCmd("when")
-	if err != nil {
-		return "", err
+	result := ""
+	if p.conn.isUndoServer {
+		extent, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return "", err
+		}
+		result = extent
+	} else {
+		event, err := p.conn.qRRCmd("when")
+		if err != nil {
+			return "", err
+		}
+		result = strings.TrimSpace(event)
 	}
-	return strings.TrimSpace(event), nil
+	return result, nil
 }
 
 const (
@@ -1091,6 +1120,19 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 	if p.tracedir == "" {
 		return -1, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		cpid := p.localCheckpointLastId
+		p.localCheckpointLastId++
+		when, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return -1, err
+		}
+		p.localCheckpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+		return cpid, nil
+	}
+
 	resp, err := p.conn.qRRCmd("checkpoint", where)
 	if err != nil {
 		return -1, err
@@ -1119,6 +1161,16 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		r := make([]proc.Checkpoint, 0, len(p.localCheckpoints))
+		for _, cp := range p.localCheckpoints {
+			r = append(r, cp)
+		}
+		return r, nil
+	}
+
 	resp, err := p.conn.qRRCmd("info checkpoints")
 	if err != nil {
 		return nil, err
@@ -1149,6 +1201,14 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 	if p.tracedir == "" {
 		return proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		delete(p.localCheckpoints, id)
+		// We don't care if it didn't exist
+		return nil
+	}
+
 	resp, err := p.conn.qRRCmd("delete checkpoint", strconv.Itoa(id))
 	if err != nil {
 		return err
@@ -1190,6 +1250,16 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 	}
 	if p.conn.direction != proc.Forward {
 		return nil, ErrStartCallInjectionBackwards
+	}
+
+	if p.conn.isUndoServer {
+		_, err := p.conn.undoCmd("set_debuggee_volatile", "1")
+		if err != nil {
+			return nil, err
+		}
+		return func() {
+			_, _ = p.conn.undoCmd("set_debuggee_volatile", "0")
+		}, nil
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target
@@ -1904,18 +1974,18 @@ func (t *gdbThread) readG() error {
 
 	data := make([]byte, wordSize)
 	tlsaddr := binary.LittleEndian.Uint64(tls)
-	if (tlsaddr == 0) {
+	if tlsaddr == 0 {
 		t.regs.tls = 0
 		t.regs.gaddr = 0
 		t.regs.hasgaddr = true
 		return nil
 	}
 
-	len, err := t.p.ReadMemory(data, tlsaddr - uint64(wordSize))
+	len, err := t.p.ReadMemory(data, tlsaddr-uint64(wordSize))
 	if err != nil {
 		return err
 	}
-	if (len != wordSize) {
+	if len != wordSize {
 		return fmt.Errorf("too little data: only %d bytes", len)
 	}
 

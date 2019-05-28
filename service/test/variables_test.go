@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/constant"
 	"io/ioutil"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -85,7 +86,7 @@ func findFirstNonRuntimeFrame(p *proc.Target) (proc.Stackframe, error) {
 }
 
 func evalScope(p *proc.Target) (*proc.EvalScope, error) {
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return proc.GoroutineScope(p, p.CurrentThread())
 	}
 	frame, err := findFirstNonRuntimeFrame(p)
@@ -130,6 +131,7 @@ func withTestProcessArgs(name string, t *testing.T, wd string, args []string, bu
 	var p *proc.Target
 	var err error
 	var tracedir string
+	var recording string
 	switch testBackend {
 	case "native":
 		p, err = native.Launch(append([]string{fixture.Path}, args...), wd, 0, []string{}, "", [3]string{})
@@ -140,6 +142,11 @@ func withTestProcessArgs(name string, t *testing.T, wd string, args []string, bu
 		t.Log("recording")
 		p, tracedir, err = gdbserial.RecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
 		t.Logf("replaying %q", tracedir)
+	case "undo":
+		protest.MustHaveRecordingAllowed(t)
+		t.Log("recording")
+		p, recording, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
+		t.Logf("replaying")
 	default:
 		t.Fatalf("unknown backend %q", testBackend)
 	}
@@ -149,6 +156,9 @@ func withTestProcessArgs(name string, t *testing.T, wd string, args []string, bu
 
 	defer func() {
 		p.Detach(true)
+		if recording != "" {
+			os.Remove(recording)
+		}
 	}()
 
 	fn(p, fixture)
@@ -218,7 +228,7 @@ func TestVariableEvaluation(t *testing.T) {
 				}
 			}
 
-			if tc.alternate != "" && testBackend != "rr" {
+			if tc.alternate != "" && testBackend != "rr" && testBackend != "undo" {
 				assertNoError(setVariable(p, tc.name, tc.alternate), t, "SetVariable()")
 				variable, err = evalVariable(p, tc.name, pnormalLoadConfig)
 				assertNoError(err, t, "EvalVariable()")
@@ -467,7 +477,7 @@ func TestLocalVariables(t *testing.T) {
 			var scope *proc.EvalScope
 			var err error
 
-			if testBackend == "rr" {
+			if testBackend == "rr" || testBackend == "undo" {
 				var frame proc.Stackframe
 				frame, err = findFirstNonRuntimeFrame(p)
 				if err == nil {

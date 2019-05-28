@@ -174,6 +174,9 @@ func New(config *Config, processArgs []string) (*Debugger, error) {
 		case "rr":
 			d.log.Infof("opening trace %s", d.config.CoreFile)
 			p, err = gdbserial.Replay(d.config.CoreFile, false, false, d.config.DebugInfoDirectories)
+		case "undo":
+			d.log.Infof("opening recording %s", d.config.CoreFile)
+			p, err = gdbserial.UndoReplay(d.config.CoreFile, "", false, d.config.DebugInfoDirectories)
 		default:
 			d.log.Infof("opening core file %s (executable %s)", d.config.CoreFile, d.processArgs[0])
 			p, err = core.OpenCore(d.config.CoreFile, d.processArgs[0], d.config.DebugInfoDirectories)
@@ -301,6 +304,9 @@ func (d *Debugger) Launch(processArgs []string, wd string) (*proc.Target, error)
 			}
 		}()
 		return nil, nil
+	case "undo":
+		tgt, _, err := gdbserial.UndoRecordAndReplay(processArgs, wd, false, d.config.DebugInfoDirectories, d.config.Redirects)
+		return tgt, err
 
 	case "default":
 		if runtime.GOOS == "darwin" {
@@ -503,7 +509,7 @@ func (d *Debugger) Restart(rerecord bool, pos string, resetArgs bool, newArgs []
 		}
 	}
 
-	if recorded {
+	if recorded && d.config.Backend == "rr" {
 		run, stop, err2 := gdbserial.RecordAsync(d.processArgs, d.config.WorkingDir, false, d.config.Redirects)
 		if err2 != nil {
 			return nil, err2
@@ -512,6 +518,8 @@ func (d *Debugger) Restart(rerecord bool, pos string, resetArgs bool, newArgs []
 		d.recordingStart(stop)
 		p, err = d.recordingRun(run)
 		d.recordingDone()
+	} else if recorded && d.config.Backend == "undo" {
+		p, _, err = gdbserial.UndoRecordAndReplay(d.processArgs, d.config.WorkingDir, false, d.config.DebugInfoDirectories, d.config.Redirects)
 	} else {
 		p, err = d.Launch(d.processArgs, d.config.WorkingDir)
 	}
@@ -2061,8 +2069,8 @@ func (d *Debugger) ExamineMemory(address uint64, length int) ([]byte, error) {
 
 func (d *Debugger) GetVersion(out *api.GetVersionOut) error {
 	if d.config.CoreFile != "" {
-		if d.config.Backend == "rr" {
-			out.Backend = "rr"
+		if d.config.Backend == "rr" || d.config.Backend == "undo" {
+			out.Backend = d.config.Backend
 		} else {
 			out.Backend = "core"
 		}
