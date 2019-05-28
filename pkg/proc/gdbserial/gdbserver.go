@@ -23,6 +23,8 @@
 //    macOS.
 //  * mozilla rr: a stub that records the full execution of a program
 //    and can then play it back.
+//  * undo: a stub that records the full execution of a program
+//    and can then play it back.
 //
 // Implementations of the protocol vary wildly between stubs, while there is
 // a command to query the stub about supported features (qSupported) this
@@ -864,7 +866,17 @@ continueLoop:
 		trapthread, atstart, shouldStop, shouldExitErr = p.handleThreadSignals(cctx, trapthread)
 		if shouldExitErr {
 			p.almostExited = true
-			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}
+
+			exit_code := 0
+			if p.conn.undoSession != nil {
+				// Retrieve the exit code of the recorded process (if applicable)
+				// from udbserver.
+				exit_code, err = undoGetExitCode(&p.conn)
+				if err != nil {
+					return nil, proc.StopUnknown, err
+				}
+			}
+			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid, Status: exit_code}
 		}
 		if shouldStop {
 			break continueLoop
@@ -933,7 +945,7 @@ func (p *gdbProcess) handleThreadSignals(cctx *proc.ContinueOnceContext, trapthr
 			}
 		case breakpointSignal: // breakpoint
 			isStopSignal = true
-		case childSignal: // stop on debugserver but SIGCHLD on lldb-server/linux
+		case childSignal: // stop on debugserver or udbserver but SIGCHLD on lldb-server/linux
 			if p.conn.isDebugserver {
 				isStopSignal = true
 			}
@@ -1054,6 +1066,15 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 		return nil, proc.ErrNotRecorded
 	}
 
+	// Is this a checkpoint on a server using local checkpoints?
+	if p.conn.undoSession != nil {
+		var err error
+		pos, err = p.conn.undoSession.resolveUserTime(pos)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	p.exited = false
 	p.almostExited = false
 
@@ -1063,16 +1084,23 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 
 	p.ctrlC = false
 
-	err := p.conn.restart(pos)
+	var err error
+	if p.conn.undoSession != nil {
+		err = p.conn.undoSession.travelToTime(&p.conn, pos)
+	} else {
+		err = p.conn.restart(pos)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	// for some reason we have to send a vCont;c after a vRun to make rr behave
 	// properly, because that's what gdb does.
-	_, err = p.conn.resume(cctx, nil, nil)
-	if err != nil {
-		return nil, err
+	if p.conn.undoSession == nil {
+		_, err = p.conn.resume(cctx, nil, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = p.updateThreadList(&threadUpdater{p: p})
@@ -1089,17 +1117,27 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 	return p.currentThread, p.setCurrentBreakpoints()
 }
 
-// When executes the 'when' command for the Mozilla RR backend.
+// When executes the 'when' command for the Mozilla RR/Undo backends.
 // This command will return rr's internal event number.
 func (p *gdbProcess) When() (string, error) {
 	if p.tracedir == "" {
 		return "", proc.ErrNotRecorded
 	}
-	event, err := p.conn.qRRCmd("when")
-	if err != nil {
-		return "", err
+	result := ""
+	if p.conn.undoSession != nil {
+		when, err := undoWhen(&p.conn)
+		if err != nil {
+			return "", err
+		}
+		result = when
+	} else {
+		event, err := p.conn.qRRCmd("when")
+		if err != nil {
+			return "", err
+		}
+		result = strings.TrimSpace(event)
 	}
-	return strings.TrimSpace(event), nil
+	return result, nil
 }
 
 const (
@@ -1111,6 +1149,12 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 	if p.tracedir == "" {
 		return -1, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.createCheckpoint(&p.conn, where)
+	}
+
 	resp, err := p.conn.qRRCmd("checkpoint", where)
 	if err != nil {
 		return -1, err
@@ -1139,6 +1183,12 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.getCheckpoints()
+	}
+
 	resp, err := p.conn.qRRCmd("info checkpoints")
 	if err != nil {
 		return nil, err
@@ -1169,6 +1219,14 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 	if p.tracedir == "" {
 		return proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.undoSession != nil {
+		p.conn.undoSession.deleteCheckpoint(&p.conn, id)
+		// We don't care if it didn't exist
+		return nil
+	}
+
 	resp, err := p.conn.qRRCmd("delete checkpoint", strconv.Itoa(id))
 	if err != nil {
 		return err
@@ -1210,6 +1268,10 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 	}
 	if p.conn.direction != proc.Forward {
 		return nil, ErrStartCallInjectionBackwards
+	}
+
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.activateVolatile(&p.conn)
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target

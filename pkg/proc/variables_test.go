@@ -69,7 +69,7 @@ func assertVariable(t testing.TB, variable *proc.Variable, expected varTest) {
 }
 
 func evalScope(p *proc.Target) (*proc.EvalScope, error) {
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return proc.GoroutineScope(p, p.CurrentThread())
 	}
 	frame, err := findFirstNonRuntimeFrame(p)
@@ -158,7 +158,7 @@ func TestVariableEvaluation2(t *testing.T) {
 				}
 			}
 
-			if tc.alternate != "" && testBackend != "rr" {
+			if tc.alternate != "" && testBackend != "rr" && testBackend != "undo" {
 				assertNoError(setVariable(p, tc.name, tc.alternate), t, "SetVariable()")
 				variable, err = evalVariableWithCfg(p, tc.name, pnormalLoadConfig)
 				assertNoError(err, t, "EvalVariable()")
@@ -407,7 +407,7 @@ func TestLocalVariables(t *testing.T) {
 			var scope *proc.EvalScope
 			var err error
 
-			if testBackend == "rr" {
+			if testBackend == "rr" || testBackend == "undo" {
 				var frame proc.Stackframe
 				frame, err = findFirstNonRuntimeFrame(p)
 				if err == nil {
