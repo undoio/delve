@@ -62,7 +62,6 @@
 package gdbserial
 
 import (
-	"bytes"
 	"debug/macho"
 	"encoding/binary"
 	"errors"
@@ -120,8 +119,6 @@ type Process struct {
 	gcmdok         bool   // true if the stub supports g and G commands
 	threadStopInfo bool   // true if the stub supports qThreadStopInfo
 	tracedir       string // if attached to rr the path to the trace directory
-
-	loadGInstrAddr uint64 // address of the g loading instruction, zero if we couldn't allocate it
 
 	process  *os.Process
 	waitChan chan *os.ProcessState
@@ -269,20 +266,6 @@ func (p *Process) Connect(conn net.Conn, path string, pid int, debugInfoDirs []s
 
 	if err := p.initialize(path, debugInfoDirs); err != nil {
 		return err
-	}
-
-	// None of the stubs we support returns the value of fs_base or gs_base
-	// along with the registers, therefore we have to resort to executing a MOV
-	// instruction on the inferior to find out where the G struct of a given
-	// thread is located.
-	// Here we try to allocate some memory on the inferior which we will use to
-	// store the MOV instruction.
-	// If the stub doesn't support memory allocation reloadRegisters will
-	// overwrite some existing memory to store the MOV.
-	if addr, err := p.conn.allocMemory(256); err == nil {
-		if _, err := p.conn.writeMemory(uintptr(addr), p.loadGInstr()); err == nil {
-			p.loadGInstrAddr = addr
-		}
 	}
 	return nil
 }
@@ -1312,30 +1295,6 @@ func (t *Thread) Blocked() bool {
 	}
 }
 
-// loadGInstr returns the correct MOV instruction for the current
-// OS/architecture that can be executed to load the address of G from an
-// inferior's thread.
-func (p *Process) loadGInstr() []byte {
-	var op []byte
-	switch p.bi.GOOS {
-	case "windows":
-		// mov rcx, QWORD PTR gs:{uint32(off)}
-		op = []byte{0x65, 0x48, 0x8b, 0x0c, 0x25}
-	case "linux":
-		// mov rcx,QWORD PTR fs:{uint32(off)}
-		op = []byte{0x64, 0x48, 0x8B, 0x0C, 0x25}
-	case "darwin":
-		// mov rcx,QWORD PTR gs:{uint32(off)}
-		op = []byte{0x65, 0x48, 0x8B, 0x0C, 0x25}
-	default:
-		panic("unsupported operating system attempting to find Goroutine on Thread")
-	}
-	buf := &bytes.Buffer{}
-	buf.Write(op)
-	binary.Write(buf, binary.LittleEndian, uint32(p.bi.GStructOffset()))
-	return buf.Bytes()
-}
-
 func (regs *gdbRegisters) init(regsInfo []gdbRegisterInfo) {
 	regs.regs = make(map[string]gdbRegister)
 	regs.regsInfo = regsInfo
@@ -1388,10 +1347,7 @@ func (t *Thread) reloadRegisters() error {
 		}
 	}
 
-	if t.p.loadGInstrAddr > 0 {
-		return t.reloadGAlloc()
-	}
-	return t.reloadGAtPC()
+	return t.readG()
 }
 
 func (t *Thread) writeSomeRegisters(regNames ...string) error {
@@ -1431,134 +1387,43 @@ func (t *Thread) readSomeRegisters(regNames ...string) error {
 	return nil
 }
 
-// reloadGAtPC overwrites the instruction that the thread is stopped at with
-// the MOV instruction used to load current G, executes this single
-// instruction and then puts everything back the way it was.
-func (t *Thread) reloadGAtPC() error {
-	movinstr := t.p.loadGInstr()
+// readG gets the value at fs:-8, which is the G pointer. This function
+// replaces previous baroque schemes to get the G pointer which involved
+// code injection.
+func(t *Thread) readG() error {
+	var regnum int
 
-	if t.Blocked() {
+	switch t.p.bi.GOOS {
+	case "windows":
+	case "darkwin":
+		regnum = 59 // gs_base
+	case "linux":
+		regnum = 58 // fs_base
+	default:
+		panic("unsupported operating system attempting to find Goroutine on Thread")
+	}
+
+	tls := make([]byte, 8)
+	err := t.p.conn.readRegister(t.strID, regnum, tls)
+	if err != nil {
+		return err
+	}
+
+	data := make([]byte, 8)
+	tlsaddr := binary.LittleEndian.Uint64(tls)
+	if (tlsaddr == 0) {
 		t.regs.tls = 0
 		t.regs.gaddr = 0
 		t.regs.hasgaddr = true
 		return nil
 	}
 
-	cx := t.regs.CX()
-	pc := t.regs.PC()
-
-	// We are partially replicating the code of GdbserverThread.stepInstruction
-	// here.
-	// The reason is that lldb-server has a bug with writing to memory and
-	// setting/clearing breakpoints to that same memory which we must work
-	// around by clearing and re-setting the breakpoint in a specific sequence
-	// with the memory writes.
-	// Additionally all breakpoints in [pc, pc+len(movinstr)] need to be removed
-	for addr := range t.p.breakpoints.M {
-		if addr >= pc && addr <= pc+uint64(len(movinstr)) {
-			err := t.p.conn.clearBreakpoint(addr)
-			if err != nil {
-				return err
-			}
-			defer t.p.conn.setBreakpoint(addr)
-		}
+	len, err := t.ReadMemory(data, uintptr(tlsaddr-8))
+	if (len != 8) {
+		return fmt.Errorf("too little data: only %d bytes", len)
 	}
-
-	savedcode := make([]byte, len(movinstr))
-	_, err := t.ReadMemory(savedcode, uintptr(pc))
-	if err != nil {
-		return err
-	}
-
-	_, err = t.WriteMemory(uintptr(pc), movinstr)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		_, err0 := t.WriteMemory(uintptr(pc), savedcode)
-		if err == nil {
-			err = err0
-		}
-		t.regs.setPC(pc)
-		t.regs.setCX(cx)
-		err1 := t.writeSomeRegisters(regnamePC, regnameCX)
-		if err == nil {
-			err = err1
-		}
-	}()
-
-	_, _, err = t.p.conn.step(t.strID, nil)
-	if err != nil {
-		if err == threadBlockedError {
-			t.regs.tls = 0
-			t.regs.gaddr = 0
-			t.regs.hasgaddr = true
-			return nil
-		}
-		return err
-	}
-
-	if err := t.readSomeRegisters(regnamePC, regnameCX); err != nil {
-		return err
-	}
-
-	t.regs.gaddr = t.regs.CX()
+	t.regs.gaddr = binary.LittleEndian.Uint64(data)
 	t.regs.hasgaddr = true
-
-	return err
-}
-
-// reloadGAlloc makes the specified thread execute one instruction stored at
-// t.p.loadGInstrAddr then restores the value of the thread's registers.
-// t.p.loadGInstrAddr must point to valid memory on the inferior, containing
-// a MOV instruction that loads the address of the current G in the RCX
-// register.
-func (t *Thread) reloadGAlloc() error {
-	if t.Blocked() {
-		t.regs.tls = 0
-		t.regs.gaddr = 0
-		t.regs.hasgaddr = true
-		return nil
-	}
-
-	cx := t.regs.CX()
-	pc := t.regs.PC()
-
-	t.regs.setPC(t.p.loadGInstrAddr)
-	if err := t.writeSomeRegisters(regnamePC); err != nil {
-		return err
-	}
-
-	var err error
-
-	defer func() {
-		t.regs.setPC(pc)
-		t.regs.setCX(cx)
-		err1 := t.writeSomeRegisters(regnamePC, regnameCX)
-		if err == nil {
-			err = err1
-		}
-	}()
-
-	_, _, err = t.p.conn.step(t.strID, nil)
-	if err != nil {
-		if err == threadBlockedError {
-			t.regs.tls = 0
-			t.regs.gaddr = 0
-			t.regs.hasgaddr = true
-			return nil
-		}
-		return err
-	}
-
-	if err := t.readSomeRegisters(regnameCX); err != nil {
-		return err
-	}
-
-	t.regs.gaddr = t.regs.CX()
-	t.regs.hasgaddr = true
-
 	return err
 }
 
