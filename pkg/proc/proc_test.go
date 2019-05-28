@@ -99,6 +99,7 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	var p *proc.Target
 	var err error
 	var tracedir string
+	var recording string
 
 	switch testBackend {
 	case "native":
@@ -110,6 +111,11 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 		t.Log("recording")
 		p, tracedir, err = gdbserial.RecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
 		t.Logf("replaying %q", tracedir)
+	case "undo":
+		protest.MustHaveRecordingAllowed(t)
+		t.Log("recording")
+		p, recording, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
+		t.Logf("replaying")
 	default:
 		t.Fatal("unknown backend")
 	}
@@ -119,6 +125,9 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 
 	defer func() {
 		p.Detach(true)
+		if recording != "" {
+			os.Remove(recording)
+		}
 	}()
 
 	fn(p, fixture)
@@ -1153,7 +1162,7 @@ func evalVariableOrError(p *proc.Target, symbol string) (*proc.Variable, error) 
 	var scope *proc.EvalScope
 	var err error
 
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		var frame proc.Stackframe
 		frame, err = findFirstNonRuntimeFrame(p)
 		if err == nil {
@@ -2710,7 +2719,7 @@ func TestIssue594(t *testing.T) {
 		assertNoError(p.Continue(), t, "Continue()")
 		var f string
 		var ln int
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			frame, err := findFirstNonRuntimeFrame(p)
 			assertNoError(err, t, "findFirstNonRuntimeFrame")
 			f, ln = frame.Current.File, frame.Current.Line
@@ -2867,7 +2876,7 @@ func TestAttachDetach(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	var buildFlags protest.BuildFlags
@@ -3080,7 +3089,7 @@ func TestIssue871(t *testing.T) {
 
 		var scope *proc.EvalScope
 		var err error
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			var frame proc.Stackframe
 			frame, err = findFirstNonRuntimeFrame(p)
 			if err == nil {
@@ -3167,7 +3176,7 @@ func TestAttachStripped(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	if runtime.GOOS == "darwin" {

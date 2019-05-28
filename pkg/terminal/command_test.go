@@ -141,7 +141,7 @@ func withTestTerminal(name string, t testing.TB, fn func(*FakeTerminal)) {
 }
 
 func withTestTerminalBuildFlags(name string, t testing.TB, buildFlags test.BuildFlags, fn func(*FakeTerminal)) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		test.MustHaveRecordingAllowed(t)
 	}
 	os.Setenv("TERM", "dumb")
