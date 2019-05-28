@@ -29,7 +29,7 @@ Pass flags to the program you are debugging using `--`, for example:
 * [dlv dap](dlv_dap.md)	 - Starts a headless TCP server communicating via Debug Adaptor Protocol (DAP).
 * [dlv debug](dlv_debug.md)	 - Compile and begin debugging main package in current directory, or the package specified.
 * [dlv exec](dlv_exec.md)	 - Execute a precompiled binary, and begin a debug session.
-* [dlv replay](dlv_replay.md)	 - Replays a rr trace.
+* [dlv replay](dlv_replay.md)	 - Replays a rr trace or Undo recording.
 * [dlv test](dlv_test.md)	 - Compile test binary and begin debugging program.
 * [dlv trace](dlv_trace.md)	 - Compile and begin tracing program.
 * [dlv version](dlv_version.md)	 - Prints version.

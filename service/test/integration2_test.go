@@ -62,7 +62,7 @@ func withTestClient2(name string, t *testing.T, fn func(c service.Client)) {
 }
 
 func startServer(name string, buildFlags protest.BuildFlags, t *testing.T, redirects [3]string, args []string) (clientConn net.Conn, fixture protest.Fixture) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		protest.MustHaveRecordingAllowed(t)
 	}
 	listener, clientConn := service.ListenerPipe()
@@ -1756,6 +1756,9 @@ func TestClientServer_Issue528(t *testing.T) {
 }
 
 func TestClientServer_FpRegisters(t *testing.T) {
+	if testBackend == "undo" {
+		t.Skip("undo backend doesn't report floating-point registers [#19]")
+	}
 	if runtime.GOARCH != "amd64" {
 		t.Skip("test is valid only on AMD64")
 	}
@@ -1933,8 +1936,8 @@ func TestClientServer_SelectedGoroutineLoc(t *testing.T) {
 
 func TestClientServer_ReverseContinue(t *testing.T) {
 	protest.AllowRecording(t)
-	if testBackend != "rr" {
-		t.Skip("backend is not rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("only valid for recorded targets")
 	}
 	withTestClient2("continuetestprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.main", Line: -1})
@@ -2103,7 +2106,7 @@ func TestClientServer_StepOutReturn(t *testing.T) {
 }
 
 func TestAcceptMulticlient(t *testing.T) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		t.Skip("recording not allowed for TestAcceptMulticlient")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -2339,7 +2342,7 @@ func TestIssue1703(t *testing.T) {
 
 func TestRerecord(t *testing.T) {
 	protest.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		t.Skip("only valid for recorded targets")
 	}
 	withTestClient2("testrerecord", t, func(c service.Client) {
@@ -2496,7 +2499,7 @@ func TestRedirects(t *testing.T) {
 			t.Fatalf("Wrong output %q", string(buf))
 		}
 		os.Remove(outpath)
-		if testBackend != "rr" {
+		if testBackend != "rr" && testBackend != "undo" {
 			_, err = c.Restart(false)
 			assertNoError(err, t, "Restart")
 			<-c.Continue()
@@ -2538,7 +2541,7 @@ func TestIssue2162(t *testing.T) {
 
 func TestDetachLeaveRunning(t *testing.T) {
 	// See https://github.com/go-delve/delve/issues/2259
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 
@@ -2799,7 +2802,7 @@ func TestGenericsBreakpoint(t *testing.T) {
 }
 
 func TestRestartRewindAfterEnd(t *testing.T) {
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		t.Skip("not relevant")
 	}
 	// Check that Restart works after the program has terminated, even if a

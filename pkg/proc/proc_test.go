@@ -95,19 +95,23 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	}
 	fixture := protest.BuildFixture(t, name, buildFlags)
 
-	grp := startTestProcessArgs(fixture, t, wd, args)
+	grp, recording := startTestProcessArgs(fixture, t, wd, args)
 
 	defer func() {
 		grp.Detach(true)
+		if recording != "" {
+			os.Remove(recording)
+		}
 	}()
 
 	fn(grp.Selected, grp, fixture)
 }
 
-func startTestProcessArgs(fixture protest.Fixture, t testing.TB, wd string, args []string) *proc.TargetGroup {
+func startTestProcessArgs(fixture protest.Fixture, t testing.TB, wd string, args []string) (*proc.TargetGroup, string) {
 	var grp *proc.TargetGroup
 	var err error
 	var tracedir string
+	var recording string
 
 	switch testBackend {
 	case "native":
@@ -119,13 +123,19 @@ func startTestProcessArgs(fixture protest.Fixture, t testing.TB, wd string, args
 		t.Log("recording")
 		grp, tracedir, err = gdbserial.RecordAndReplay(append([]string{fixture.Path}, args...), wd, true, true, []string{}, "", proc.OutputRedirect{}, proc.OutputRedirect{})
 		t.Logf("replaying %q", tracedir)
+	case "undo":
+		protest.MustHaveRecordingAllowed(t)
+		t.Log("recording")
+		grp, recording, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, "", proc.OutputRedirect{}, proc.OutputRedirect{})
+		t.Logf("replaying")
 	default:
 		t.Fatal("unknown backend")
 	}
 	if err != nil {
 		t.Fatal("Launch():", err)
 	}
-	return grp
+
+	return grp, recording
 }
 
 func getRegisters(p *proc.Target, t *testing.T) proc.Registers {
@@ -1042,7 +1052,7 @@ func evalVariableOrError(p *proc.Target, symbol string) (*proc.Variable, error) 
 	var scope *proc.EvalScope
 	var err error
 
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		var frame proc.Stackframe
 		frame, err = findFirstNonRuntimeFrame(p)
 		if err == nil {
@@ -2418,7 +2428,7 @@ func TestIssue594(t *testing.T) {
 		assertNoError(grp.Continue(), t, "Continue()")
 		var f string
 		var ln int
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			frame, err := findFirstNonRuntimeFrame(p)
 			assertNoError(err, t, "findFirstNonRuntimeFrame")
 			f, ln = frame.Current.File, frame.Current.Line
@@ -2560,7 +2570,7 @@ func TestAttachDetach(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	var buildFlags protest.BuildFlags
@@ -2801,7 +2811,7 @@ func TestIssue871(t *testing.T) {
 
 		var scope *proc.EvalScope
 		var err error
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			var frame proc.Stackframe
 			frame, err = findFirstNonRuntimeFrame(p)
 			if err == nil {
@@ -5696,7 +5706,7 @@ func TestWaitForAttach(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 
@@ -6025,7 +6035,10 @@ func TestChainedBreakpoint(t *testing.T) {
 
 		t.Logf("=== Restart ===")
 
-		grp2 := startTestProcessArgs(fixture, t, ".", []string{})
+		grp2, recording := startTestProcessArgs(fixture, t, ".", []string{})
+		defer func () {
+			os.Remove(recording)
+		}()
 		proc.Restart(grp2, grp, func(lbp *proc.LogicalBreakpoint, err error) {
 			t.Fatalf("discarded logical breakpoint %v: %v", lbp, err)
 		})
