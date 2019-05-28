@@ -100,6 +100,7 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	var grp *proc.TargetGroup
 	var err error
 	var tracedir string
+	var recording string
 
 	switch testBackend {
 	case "native":
@@ -111,6 +112,11 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 		t.Log("recording")
 		grp, tracedir, err = gdbserial.RecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
 		t.Logf("replaying %q", tracedir)
+	case "undo":
+		protest.MustHaveRecordingAllowed(t)
+		t.Log("recording")
+		grp, recording, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{}, [3]string{})
+		t.Logf("replaying")
 	default:
 		t.Fatal("unknown backend")
 	}
@@ -120,6 +126,9 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 
 	defer func() {
 		grp.Detach(true)
+		if recording != "" {
+			os.Remove(recording)
+		}
 	}()
 
 	fn(grp.Selected, grp, fixture)
@@ -1177,7 +1186,7 @@ func evalVariableOrError(p *proc.Target, symbol string) (*proc.Variable, error) 
 	var scope *proc.EvalScope
 	var err error
 
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		var frame proc.Stackframe
 		frame, err = findFirstNonRuntimeFrame(p)
 		if err == nil {
@@ -2717,7 +2726,7 @@ func TestIssue594(t *testing.T) {
 		assertNoError(grp.Continue(), t, "Continue()")
 		var f string
 		var ln int
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			frame, err := findFirstNonRuntimeFrame(p)
 			assertNoError(err, t, "findFirstNonRuntimeFrame")
 			f, ln = frame.Current.File, frame.Current.Line
@@ -2859,7 +2868,7 @@ func TestAttachDetach(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	var buildFlags protest.BuildFlags
@@ -3072,7 +3081,7 @@ func TestIssue871(t *testing.T) {
 
 		var scope *proc.EvalScope
 		var err error
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			var frame proc.Stackframe
 			frame, err = findFirstNonRuntimeFrame(p)
 			if err == nil {
@@ -3159,7 +3168,7 @@ func TestAttachStripped(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	if runtime.GOOS == "darwin" {
@@ -4814,8 +4823,8 @@ func BenchmarkConditionalBreakpoints(b *testing.B) {
 }
 
 func TestBackwardNextGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -4845,8 +4854,8 @@ func TestBackwardNextGeneral(t *testing.T) {
 }
 
 func TestBackwardStepOutGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -4857,8 +4866,8 @@ func TestBackwardStepOutGeneral(t *testing.T) {
 }
 
 func TestBackwardStepGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -4896,8 +4905,8 @@ func TestBackwardStepGeneral(t *testing.T) {
 }
 
 func TestBackwardNextDeferPanic(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	if goversion.VersionAfterOrEqual(runtime.Version(), 1, 18) {
 		testseq2(t, "defercall", "", []seqTest{
