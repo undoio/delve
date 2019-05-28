@@ -63,6 +63,7 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	var p proc.Process
 	var err error
 	var tracedir string
+	var tracefile string
 
 	switch testBackend {
 	case "native":
@@ -74,6 +75,11 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 		t.Log("recording")
 		p, tracedir, err = gdbserial.RecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{})
 		t.Logf("replaying %q", tracedir)
+	case "undo":
+		protest.MustHaveRecordingAllowed(t)
+		t.Log("recording")
+		p, tracefile, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{})
+		t.Logf("replaying")
 	default:
 		t.Fatal("unknown backend")
 	}
@@ -85,6 +91,9 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 		p.Detach(true)
 		if tracedir != "" {
 			protest.SafeRemoveAll(tracedir)
+		}
+		if tracefile != "" {
+			os.Remove(tracefile)
 		}
 	}()
 
@@ -1110,7 +1119,7 @@ func evalVariableOrError(p proc.Process, symbol string) (*proc.Variable, error) 
 	var scope *proc.EvalScope
 	var err error
 
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		var frame proc.Stackframe
 		frame, err = findFirstNonRuntimeFrame(p)
 		if err == nil {
@@ -2544,7 +2553,7 @@ func TestIssue594(t *testing.T) {
 		assertNoError(proc.Continue(p), t, "Continue()")
 		var f string
 		var ln int
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			frame, err := findFirstNonRuntimeFrame(p)
 			assertNoError(err, t, "findFirstNonRuntimeFrame")
 			f, ln = frame.Current.File, frame.Current.Line

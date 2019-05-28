@@ -23,6 +23,8 @@
 //    macOS.
 //  * mozilla rr: a stub that records the full execution of a program
 //    and can then play it back.
+//  * undo: a stub that records the full execution of a program
+//    and can then play it back.
 //
 // Implementations of the protocol vary wildly between stubs, while there is
 // a command to query the stub about supported features (qSupported) this
@@ -124,6 +126,9 @@ type Process struct {
 	waitChan chan *os.ProcessState
 
 	common proc.CommonProcess
+
+	localCheckpointLastId int
+	localCheckpoints      map[int]proc.Checkpoint
 }
 
 // Thread represents an operating system thread.
@@ -179,13 +184,15 @@ func New(process *os.Process) *Process {
 			direction:           proc.Forward,
 			log:                 logger,
 		},
-		threads:        make(map[int]*Thread),
-		bi:             proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
-		breakpoints:    proc.NewBreakpointMap(),
-		gcmdok:         true,
-		threadStopInfo: true,
-		process:        process,
-		common:         proc.NewCommonProcess(true),
+		threads:               make(map[int]*Thread),
+		bi:                    proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
+		breakpoints:           proc.NewBreakpointMap(),
+		gcmdok:                true,
+		threadStopInfo:        true,
+		process:               process,
+		common:                proc.NewCommonProcess(true),
+		localCheckpointLastId: 1,
+		localCheckpoints:      make(map[int]proc.Checkpoint),
 	}
 
 	if process != nil {
@@ -657,7 +664,7 @@ continueLoop:
 		case breakpointSignal: // breakpoint
 			break continueLoop
 		case childSignal: // stop on debugserver but SIGCHLD on lldb-server/linux
-			if p.conn.isDebugserver {
+			if p.conn.isDebugserver || p.conn.isUndoServer {
 				break continueLoop
 			}
 		case stopSignal: // stop
@@ -849,6 +856,16 @@ func (p *Process) Restart(pos string) error {
 		return proc.ErrNotRecorded
 	}
 
+	// Is this a checkpoint on a server using local checkpoints?
+	if len(pos) > 1 && pos[:1] == "c" && p.conn.isUndoServer {
+		cpid, _ := strconv.Atoi(pos[1:])
+		checkpoint, exists := p.localCheckpoints[cpid]
+		if !exists {
+			return errors.New("Checkpoint not found")
+		}
+		pos = checkpoint.When
+	}
+
 	p.exited = false
 
 	p.common.ClearAllGCache()
@@ -865,9 +882,11 @@ func (p *Process) Restart(pos string) error {
 
 	// for some reason we have to send a vCont;c after a vRun to make rr behave
 	// properly, because that's what gdb does.
-	_, _, err = p.conn.resume(0, nil)
-	if err != nil {
-		return err
+	if !p.conn.isUndoServer {
+		_, _, err = p.conn.resume(0, nil)
+		if err != nil {
+			return err
+		}
 	}
 
 	err = p.updateThreadList(&threadUpdater{p: p})
@@ -883,17 +902,28 @@ func (p *Process) Restart(pos string) error {
 	return p.setCurrentBreakpoints()
 }
 
-// When executes the 'when' command for the Mozilla RR backend.
+// When executes the 'when' command for the Mozilla RR/UndoDB backends.
 // This command will return rr's internal event number.
 func (p *Process) When() (string, error) {
 	if p.tracedir == "" {
 		return "", proc.ErrNotRecorded
 	}
-	event, err := p.conn.qRRCmd("when")
-	if err != nil {
-		return "", err
+	result := ""
+	if p.conn.isUndoServer {
+		extent, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return "", err
+		}
+		index := strings.Index(extent, ";")
+		result = extent[:index]
+	} else {
+		event, err := p.conn.qRRCmd("when")
+		if err != nil {
+			return "", err
+		}
+		result = strings.TrimSpace(event)
 	}
-	return strings.TrimSpace(event), nil
+	return result, nil
 }
 
 const (
@@ -905,6 +935,20 @@ func (p *Process) Checkpoint(where string) (int, error) {
 	if p.tracedir == "" {
 		return -1, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		cpid := p.localCheckpointLastId
+		p.localCheckpointLastId++
+		//FIXME perhaps check for duplicates in case we've wrapped. Somewhat unlikely...
+		when, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return -1, err
+		}
+		p.localCheckpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+		return cpid, nil
+	}
+
 	resp, err := p.conn.qRRCmd("checkpoint", where)
 	if err != nil {
 		return -1, err
@@ -933,6 +977,16 @@ func (p *Process) Checkpoints() ([]proc.Checkpoint, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		r := make([]proc.Checkpoint, 0, len(p.localCheckpoints))
+		for _, cp := range p.localCheckpoints {
+			r = append(r, cp)
+		}
+		return r, nil
+	}
+
 	resp, err := p.conn.qRRCmd("info checkpoints")
 	if err != nil {
 		return nil, err
@@ -963,6 +1017,14 @@ func (p *Process) ClearCheckpoint(id int) error {
 	if p.tracedir == "" {
 		return proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		delete(p.localCheckpoints, id)
+		// We don't care if it didn't exist
+		return nil
+	}
+
 	resp, err := p.conn.qRRCmd("delete checkpoint", strconv.Itoa(id))
 	if err != nil {
 		return err
@@ -1411,7 +1473,7 @@ func(t *Thread) readG() error {
 
 	data := make([]byte, 8)
 	tlsaddr := binary.LittleEndian.Uint64(tls)
-	if (tlsaddr == 0) {
+	if tlsaddr == 0 {
 		t.regs.tls = 0
 		t.regs.gaddr = 0
 		t.regs.hasgaddr = true
@@ -1419,7 +1481,7 @@ func(t *Thread) readG() error {
 	}
 
 	len, err := t.ReadMemory(data, uintptr(tlsaddr-8))
-	if (len != 8) {
+	if len != 8 {
 		return fmt.Errorf("too little data: only %d bytes", len)
 	}
 	t.regs.gaddr = binary.LittleEndian.Uint64(data)

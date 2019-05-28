@@ -290,6 +290,10 @@ func testCmd(cmd *cobra.Command, args []string) {
 			fmt.Println("\nTesting RR backend")
 			testCmdIntl("basic", "", "rr", "normal")
 		}
+		if inpath("udb") {
+			fmt.Println("\nTesting Undo backend")
+			testCmdIntl("basic", "", "undo", "normal")
+		}
 		if runtime.GOOS == "linux" {
 			fmt.Println("\nTesting PIE buildmode, default backend")
 			testCmdIntl("basic", "", "default", "pie")
@@ -298,6 +302,10 @@ func testCmd(cmd *cobra.Command, args []string) {
 		if runtime.GOOS == "linux" && inpath("rr") {
 			fmt.Println("\nTesting PIE buildmode, RR backend")
 			testCmdIntl("basic", "", "rr", "pie")
+		}
+		if runtime.GOOS == "linux" && inpath("udb") {
+			fmt.Println("\nTesting PIE buildmode, Undo backend")
+			testCmdIntl("basic", "", "undo", "pie")
 		}
 		return
 	}

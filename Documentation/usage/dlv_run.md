@@ -21,6 +21,7 @@ dlv run
 	native		Native backend.
 	lldb		Uses lldb-server or debugserver.
 	rr		Uses mozilla rr (https://github.com/mozilla/rr).
+	undo		Uses UndoDB (https://undo.io).
  (default "default")
       --build-flags string   Build flags, to be passed to the compiler.
       --headless             Run debug server only, in headless mode.

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-delve/delve/pkg/logflags"
@@ -44,6 +45,7 @@ type gdbConn struct {
 	maxTransmitAttempts   int  // maximum number of transmit or receive attempts when bad checksums are read
 	threadSuffixSupported bool // thread suffix supported by stub
 	isDebugserver         bool // true if the stub is debugserver
+	isUndoServer          bool // true if using an Undo backend
 
 	log *logrus.Entry
 }
@@ -548,8 +550,10 @@ func (conn *gdbConn) resume(sig uint8, tu *threadUpdater) (string, uint8, error)
 			fmt.Fprintf(&conn.outbuf, "$vCont;C%02x", sig)
 		}
 	} else {
-		if err := conn.selectThread('c', "p-1.-1", "resume"); err != nil {
-			return "", 0, err
+		if !conn.isUndoServer {
+			if err := conn.selectThread('c', "p-1.-1", "resume"); err != nil {
+				return "", 0, err
+			}
 		}
 		conn.outbuf.Reset()
 		fmt.Fprint(&conn.outbuf, "$bc")
@@ -576,8 +580,30 @@ func (conn *gdbConn) resume(sig uint8, tu *threadUpdater) (string, uint8, error)
 // step executes a 'vCont' command on the specified thread with 's' action.
 func (conn *gdbConn) step(threadID string, tu *threadUpdater) (string, uint8, error) {
 	if conn.direction == proc.Forward {
-		conn.outbuf.Reset()
-		fmt.Fprintf(&conn.outbuf, "$vCont;s:%s", threadID)
+		if !conn.isUndoServer {
+			conn.outbuf.Reset()
+			fmt.Fprintf(&conn.outbuf, "$vCont;s:%s", threadID)
+		} else {
+			conn.outbuf.Reset()
+			fmt.Fprintf(&conn.outbuf, "$Hc%s", threadID)
+
+			if err := conn.send(conn.outbuf.Bytes()); err != nil {
+				return "", 0, err
+			}
+
+			resp, err := conn.recv(nil, "singlestep", false)
+			if err != nil {
+				return "", 0, err
+			}
+
+			if strings.Compare(string(resp), "OK") != 0 {
+				return "", 0, fmt.Errorf("Failed to set thread ID %s: %s",
+					threadID, string(resp))
+			}
+
+			conn.outbuf.Reset()
+			fmt.Fprintf(&conn.outbuf, "$s")
+		}
 	} else {
 		if err := conn.selectThread('c', threadID, "step"); err != nil {
 			return "", 0, err
@@ -682,6 +708,10 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 			}
 		}
 
+		if syscall.Signal(sig) == syscall.SIGCHLD {
+			// FIXME get exit code
+			return false, stopPacket{}, proc.ErrProcessExited{Pid: conn.pid, Status: 0}
+		}
 		return false, sp, nil
 
 	case 'W', 'X':
@@ -921,10 +951,33 @@ func (conn *gdbConn) threadStopInfo(threadID string) (sig uint8, reason string, 
 // restart executes a 'vRun' command.
 func (conn *gdbConn) restart(pos string) error {
 	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vRun;")
-	if pos != "" {
-		fmt.Fprint(&conn.outbuf, ";")
-		writeAsciiBytes(&conn.outbuf, []byte(pos))
+
+	if conn.isUndoServer {
+		if pos != "" {
+			fmt.Fprint(&conn.outbuf, "$vUndoDB;goto_time;"+pos)
+		} else {
+			// Find the actual min BB count.
+			// TODO: is defaulting to zero if we can't get it correct?
+			minBbCount := "0"
+
+			extent, err := conn.undoCmd("get_event_log_extent")
+			if err != nil {
+				return err
+			}
+			index := strings.Index(extent, ".")
+			if index > 0 {
+				minBbCount = extent[:index]
+			}
+
+			conn.outbuf.Reset()
+			fmt.Fprint(&conn.outbuf, "$vUndoDB;goto_bbcount;"+minBbCount)
+		}
+	} else {
+		fmt.Fprint(&conn.outbuf, "$vRun;")
+		if pos != "" {
+			fmt.Fprint(&conn.outbuf, ";")
+			writeAsciiBytes(&conn.outbuf, []byte(pos))
+		}
 	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "restart")
 	return err
@@ -951,6 +1004,23 @@ func (conn *gdbConn) qRRCmd(args ...string) (string, error) {
 		data = append(data, uint8(n))
 	}
 	return string(data), nil
+}
+
+// undoCmd executes a vUndoDB command
+func (conn *gdbConn) undoCmd(args ...string) (string, error) {
+	if len(args) == 0 {
+		panic("must specify at least one argument for undoCmd")
+	}
+	conn.outbuf.Reset()
+	fmt.Fprint(&conn.outbuf, "$vUndoDB")
+	for _, arg := range args {
+		fmt.Fprint(&conn.outbuf, ":", arg)
+	}
+	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
+	if err != nil {
+		return "", err
+	}
+	return string(resp), nil
 }
 
 type imageList struct {

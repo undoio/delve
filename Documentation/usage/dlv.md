@@ -26,6 +26,7 @@ Pass flags to the program you are debugging using `--`, for example:
 	native		Native backend.
 	lldb		Uses lldb-server or debugserver.
 	rr		Uses mozilla rr (https://github.com/mozilla/rr).
+	undo		Uses UndoDB (https://undo.io).
  (default "default")
       --build-flags string   Build flags, to be passed to the compiler.
       --headless             Run debug server only, in headless mode.
@@ -50,7 +51,7 @@ Defaults to "debugger" when logging is enabled with --log.
 * [dlv core](dlv_core.md)	 - Examine a core dump.
 * [dlv debug](dlv_debug.md)	 - Compile and begin debugging main package in current directory, or the package specified.
 * [dlv exec](dlv_exec.md)	 - Execute a precompiled binary, and begin a debug session.
-* [dlv replay](dlv_replay.md)	 - Replays a rr trace.
+* [dlv replay](dlv_replay.md)	 - Replays a rr or UndoDB trace.
 * [dlv run](dlv_run.md)	 - Deprecated command. Use 'debug' instead.
 * [dlv test](dlv_test.md)	 - Compile test binary and begin debugging program.
 * [dlv trace](dlv_trace.md)	 - Compile and begin tracing program.

@@ -107,6 +107,9 @@ func New(config *Config, processArgs []string) (*Debugger, error) {
 		case "rr":
 			d.log.Infof("opening trace %s", d.config.CoreFile)
 			p, err = gdbserial.Replay(d.config.CoreFile, false, d.config.DebugInfoDirectories)
+		case "undo":
+			d.log.Infof("opening recording %s", d.config.CoreFile)
+			p, err = gdbserial.UndoReplay(d.config.CoreFile, "", false, d.config.DebugInfoDirectories)
 		default:
 			d.log.Infof("opening core file %s (executable %s)", d.config.CoreFile, d.processArgs[0])
 			p, err = core.OpenCore(d.config.CoreFile, d.processArgs[0], d.config.DebugInfoDirectories)
@@ -141,6 +144,9 @@ func (d *Debugger) Launch(processArgs []string, wd string) (proc.Process, error)
 		return betterGdbserialLaunchError(gdbserial.LLDBLaunch(processArgs, wd, d.config.Foreground, d.config.DebugInfoDirectories))
 	case "rr":
 		p, _, err := gdbserial.RecordAndReplay(processArgs, wd, false, d.config.DebugInfoDirectories)
+		return p, err
+	case "undo":
+		p, _, err := gdbserial.UndoRecordAndReplay(processArgs, wd, false, d.config.DebugInfoDirectories)
 		return p, err
 	case "default":
 		if runtime.GOOS == "darwin" {
