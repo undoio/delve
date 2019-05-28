@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/undoio/delve/pkg/logflags"
@@ -51,6 +52,8 @@ type gdbConn struct {
 	goos                  string
 
 	useXcmd bool // forces writeMemory to use the 'X' command
+
+	isUndoServer          bool // true if using an Undo backend
 
 	log *logrus.Entry
 }
@@ -806,6 +809,10 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 			}
 		}
 
+		if syscall.Signal(sig) == syscall.SIGCHLD {
+			// FIXME get exit code
+			return false, stopPacket{}, proc.ErrProcessExited{Pid: conn.pid, Status: 0}
+		}
 		return false, sp, nil
 
 	case 'W', 'X':
@@ -1104,10 +1111,33 @@ func (conn *gdbConn) threadStopInfo(threadID string) (sp stopPacket, err error) 
 // restart executes a 'vRun' command.
 func (conn *gdbConn) restart(pos string) error {
 	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vRun;")
-	if pos != "" {
-		fmt.Fprint(&conn.outbuf, ";")
-		writeAsciiBytes(&conn.outbuf, []byte(pos))
+
+	if conn.isUndoServer {
+		if pos != "" {
+			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s", pos)
+		} else {
+			// Find the actual min BB count.
+			// TODO: is defaulting to zero if we can't get it correct?
+			minBbCount := "0"
+
+			extent, err := conn.undoCmd("get_log_extent")
+			if err != nil {
+				return err
+			}
+			index := strings.Index(extent, ",")
+			if index > 0 {
+				minBbCount = extent[:index]
+			}
+
+			conn.outbuf.Reset()
+			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s;0", minBbCount)
+		}
+	} else {
+		fmt.Fprint(&conn.outbuf, "$vRun;")
+		if pos != "" {
+			fmt.Fprint(&conn.outbuf, ";")
+			writeAsciiBytes(&conn.outbuf, []byte(pos))
+		}
 	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "restart")
 	return err
@@ -1134,6 +1164,23 @@ func (conn *gdbConn) qRRCmd(args ...string) (string, error) {
 		data = append(data, uint8(n))
 	}
 	return string(data), nil
+}
+
+// undoCmd executes a vUDB command
+func (conn *gdbConn) undoCmd(args ...string) (string, error) {
+	if len(args) == 0 {
+		panic("must specify at least one argument for undoCmd")
+	}
+	conn.outbuf.Reset()
+	fmt.Fprint(&conn.outbuf, "$vUDB")
+	for _, arg := range args {
+		fmt.Fprint(&conn.outbuf, ";", arg)
+	}
+	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
+	if err != nil {
+		return "", err
+	}
+	return string(resp), nil
 }
 
 type imageList struct {
