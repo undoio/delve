@@ -28,7 +28,7 @@ func withTestClient1(name string, t *testing.T, fn func(c *rpc1.RPCClient)) {
 }
 
 func withTestClient1Extended(name string, t *testing.T, fn func(c *rpc1.RPCClient, fixture protest.Fixture)) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		protest.MustHaveRecordingAllowed(t)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

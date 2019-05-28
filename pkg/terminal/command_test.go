@@ -118,7 +118,7 @@ func withTestTerminal(name string, t testing.TB, fn func(*FakeTerminal)) {
 }
 
 func withTestTerminalBuildFlags(name string, t testing.TB, buildFlags test.BuildFlags, fn func(*FakeTerminal)) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		test.MustHaveRecordingAllowed(t)
 	}
 	t.Setenv("TERM", "dumb")
@@ -623,7 +623,7 @@ func TestListCmd(t *testing.T) {
 
 func TestReverseContinue(t *testing.T) {
 	test.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return
 	}
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
@@ -637,7 +637,7 @@ func TestReverseContinue(t *testing.T) {
 
 func TestCheckpoints(t *testing.T) {
 	test.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return
 	}
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
