@@ -50,6 +50,9 @@ type gdbConn struct {
 	useXcmd       bool // forces writeMemory to use the 'X' command
 	newRRCmdStyle bool // forces qRRCmd to use the post-5.8.0 style always
 
+	// State relating to the Undo session - non-nil when using an Undo backend.
+	undoSession *undoSession
+
 	log logflags.Logger
 }
 
@@ -864,6 +867,14 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 
 		parseMachException(&sp, metype, medata)
 
+		if conn.undoSession != nil {
+			// Transform packet, if necessary, for instance at the end of time.
+			sp, err = undoHandleStopPacket(conn, sp)
+			if err != nil {
+				return false, stopPacket{}, err
+			}
+		}
+
 		return false, sp, nil
 
 	case 'W', 'X':
@@ -1181,10 +1192,15 @@ func (conn *gdbConn) threadStopInfo(threadID string) (sp stopPacket, err error) 
 // restart executes a 'vRun' command.
 func (conn *gdbConn) restart(pos string) error {
 	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vRun;")
-	if pos != "" {
-		fmt.Fprint(&conn.outbuf, ";")
-		writeAsciiBytes(&conn.outbuf, []byte(pos))
+
+	if conn.undoSession != nil {
+		panic("restart serial operation called with an Undo backend")
+	} else {
+		fmt.Fprint(&conn.outbuf, "$vRun;")
+		if pos != "" {
+			fmt.Fprint(&conn.outbuf, ";")
+			writeAsciiBytes(&conn.outbuf, []byte(pos))
+		}
 	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "restart")
 	return err

@@ -392,8 +392,8 @@ func TestInlineStepOut(t *testing.T) {
 }
 
 func TestBackwardNextGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -423,8 +423,8 @@ func TestBackwardNextGeneral(t *testing.T) {
 }
 
 func TestBackwardStepOutGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -435,8 +435,8 @@ func TestBackwardStepOutGeneral(t *testing.T) {
 }
 
 func TestBackwardStepGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -474,8 +474,8 @@ func TestBackwardStepGeneral(t *testing.T) {
 }
 
 func TestBackwardNextDeferPanic(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "defercall", "", []seqTest{
 		{contContinue, 12},
