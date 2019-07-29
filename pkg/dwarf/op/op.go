@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/go-delve/delve/pkg/dwarf/util"
+	"github.com/undoio/delve/pkg/dwarf/util"
 )
 
 type Opcode byte

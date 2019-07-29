@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/gdbserial"
-	"github.com/go-delve/delve/pkg/proc/native"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/gdbserial"
+	"github.com/undoio/delve/pkg/proc/native"
+	"github.com/undoio/delve/service/api"
 
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 var pnormalLoadConfig = proc.LoadConfig{true, 1, 64, 64, -1, 0}
@@ -978,20 +978,20 @@ func TestPackageRenames(t *testing.T) {
 		{"amap", true, "interface {}(map[go/ast.BadExpr]net/http.Request) [{From: 2, To: 3}: *{Method: \"othermethod\", …", "", "interface {}", nil},
 
 		// Package name that doesn't match import path
-		{"iface3", true, `interface {}(*github.com/go-delve/delve/_fixtures/internal/dir0/renamedpackage.SomeType) *{A: true}`, "", "interface {}", nil},
+		{"iface3", true, `interface {}(*github.com/undoio/delve/_fixtures/internal/dir0/renamedpackage.SomeType) *{A: true}`, "", "interface {}", nil},
 
 		// Interfaces to anonymous types
 		{"amap2", true, "interface {}(*map[go/ast.BadExpr]net/http.Request) *[{From: 2, To: 3}: *{Method: \"othermethod\", …", "", "interface {}", nil},
-		{"dir0someType", true, "interface {}(*github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) *{X: 3}", "", "interface {}", nil},
-		{"dir1someType", true, "interface {}(github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType) {X: 1, Y: 2}", "", "interface {}", nil},
-		{"amap3", true, "interface {}(map[github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType]github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType) [{X: 4}: {X: 5, Y: 6}, ]", "", "interface {}", nil},
-		{"anarray", true, `interface {}([2]github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 1},{X: 2}]`, "", "interface {}", nil},
-		{"achan", true, `interface {}(chan github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) chan github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType 0/0`, "", "interface {}", nil},
-		{"aslice", true, `interface {}([]github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 3},{X: 4}]`, "", "interface {}", nil},
-		{"afunc", true, `interface {}(func(github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType, github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType)) main.main.func1`, "", "interface {}", nil},
-		{"astruct", true, `interface {}(*struct { A github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType; B github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType }) *{A: github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, B: github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType {X: 3}}`, "", "interface {}", nil},
-		{"astruct2", true, `interface {}(*struct { github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{SomeType: github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`, "", "interface {}", nil},
-		{"iface2iface", true, `interface {}(*interface { AMethod(int) int; AnotherMethod(int) int }) **github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType {X: 4}`, "", "interface {}", nil},
+		{"dir0someType", true, "interface {}(*github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) *{X: 3}", "", "interface {}", nil},
+		{"dir1someType", true, "interface {}(github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType) {X: 1, Y: 2}", "", "interface {}", nil},
+		{"amap3", true, "interface {}(map[github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType]github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType) [{X: 4}: {X: 5, Y: 6}, ]", "", "interface {}", nil},
+		{"anarray", true, `interface {}([2]github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 1},{X: 2}]`, "", "interface {}", nil},
+		{"achan", true, `interface {}(chan github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) chan github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType 0/0`, "", "interface {}", nil},
+		{"aslice", true, `interface {}([]github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 3},{X: 4}]`, "", "interface {}", nil},
+		{"afunc", true, `interface {}(func(github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType, github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType)) main.main.func1`, "", "interface {}", nil},
+		{"astruct", true, `interface {}(*struct { A github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType; B github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType }) *{A: github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, B: github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType {X: 3}}`, "", "interface {}", nil},
+		{"astruct2", true, `interface {}(*struct { github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{SomeType: github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`, "", "interface {}", nil},
+		{"iface2iface", true, `interface {}(*interface { AMethod(int) int; AnotherMethod(int) int }) **github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType {X: 4}`, "", "interface {}", nil},
 
 		{`"dir0/pkg".A`, false, "0", "", "int", nil},
 		{`"dir1/pkg".A`, false, "1", "", "int", nil},
@@ -1010,7 +1010,7 @@ func TestPackageRenames(t *testing.T) {
 			if ver.Major > 0 && !ver.AfterOrEqual(goversion.GoVersion{1, 9, -1, 0, 0, ""}) {
 				// before 1.9 embedded struct field have fieldname == type
 				if tc.name == "astruct2" {
-					tc.value = `interface {}(*struct { github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType: github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`
+					tc.value = `interface {}(*struct { github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType: github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`
 				}
 			}
 			variable, err := evalVariable(p, tc.name, pnormalLoadConfig)

@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc"
 	"github.com/sirupsen/logrus"
 )
 

@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-delve/delve/pkg/dwarf/frame"
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/line"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/dwarf/reader"
-	"github.com/go-delve/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/dwarf/frame"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/line"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/reader"
+	"github.com/undoio/delve/pkg/goversion"
 )
 
 // BinaryInfo holds information on the binary being executed.

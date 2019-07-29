@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/arch/x86/x86asm"
 
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 // AMD64Registers implements the proc.Registers interface for the native/linux

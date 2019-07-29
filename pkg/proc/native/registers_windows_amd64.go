@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/winutil"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/winutil"
 )
 
 // SetPC sets the RIP register to the value specified by `pc`.

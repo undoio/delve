@@ -11,10 +11,10 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/dwarf/reader"
-	"github.com/go-delve/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/reader"
+	"github.com/undoio/delve/pkg/logflags"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/arch/x86/x86asm"
 )

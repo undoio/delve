@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/dwarf/frame"
+	"github.com/undoio/delve/pkg/dwarf/frame"
 	"github.com/pkg/profile"
 )
 

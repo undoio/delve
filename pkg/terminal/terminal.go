@@ -13,9 +13,9 @@ import (
 
 	"github.com/peterh/liner"
 
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
 )
 
 const (

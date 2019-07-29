@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-delve/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/op"
 )
 
 const cacheEnabled = true

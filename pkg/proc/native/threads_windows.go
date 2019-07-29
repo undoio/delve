@@ -6,8 +6,8 @@ import (
 
 	sys "golang.org/x/sys/windows"
 
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/winutil"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/winutil"
 )
 
 // WaitStatus is a synonym for the platform-specific WaitStatus

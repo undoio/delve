@@ -6,7 +6,7 @@ import (
 
 	sys "golang.org/x/sys/unix"
 
-	"github.com/go-delve/delve/pkg/proc/linutil"
+	"github.com/undoio/delve/pkg/proc/linutil"
 )
 
 // PtraceAttach executes the sys.PtraceAttach call.

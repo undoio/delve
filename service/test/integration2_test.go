@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	protest "github.com/undoio/delve/pkg/proc/test"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
-	"github.com/go-delve/delve/service/rpccommon"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/rpc2"
+	"github.com/undoio/delve/service/rpccommon"
 )
 
 var normalLoadConfig = api.LoadConfig{true, 1, 64, 64, -1}

@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/goversion"
 )
 
 // EnableRace allows to configure whether the race detector is enabled on target process.

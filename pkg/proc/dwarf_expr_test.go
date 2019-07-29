@@ -12,11 +12,11 @@ import (
 	"go/constant"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/dwarf/dwarfbuilder"
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/linutil"
+	"github.com/undoio/delve/pkg/dwarf/dwarfbuilder"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/linutil"
 )
 
 const defaultCFA = 0xc420051d00

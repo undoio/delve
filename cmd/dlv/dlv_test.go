@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-delve/delve/cmd/dlv/cmds"
-	protest "github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/pkg/terminal"
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/cmd/dlv/cmds"
+	protest "github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/pkg/terminal"
+	"github.com/undoio/delve/service/rpc2"
 	"github.com/spf13/cobra/doc"
 
 	"golang.org/x/tools/go/packages"
@@ -193,9 +193,9 @@ func getDlvBin(t *testing.T) (string, string) {
 	}
 
 	dlvbin := filepath.Join(tmpdir, "dlv.exe")
-	out, err := exec.Command("go", "build", "-o", dlvbin, "github.com/go-delve/delve/cmd/dlv").CombinedOutput()
+	out, err := exec.Command("go", "build", "-o", dlvbin, "github.com/undoio/delve/cmd/dlv").CombinedOutput()
 	if err != nil {
-		t.Fatalf("go build -o %v github.com/go-delve/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
+		t.Fatalf("go build -o %v github.com/undoio/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
 	}
 
 	return dlvbin, tmpdir
@@ -355,7 +355,7 @@ func TestTypecheckRPC(t *testing.T) {
 		Mode: packages.LoadSyntax,
 		Fset: fset,
 	}
-	pkgs, err := packages.Load(cfg, "github.com/go-delve/delve/service/rpc2")
+	pkgs, err := packages.Load(cfg, "github.com/undoio/delve/service/rpc2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestTypecheckRPC(t *testing.T) {
 	var serverMethods map[string]*types.Func
 	var info *types.Info
 	packages.Visit(pkgs, func(pkg *packages.Package) bool {
-		if pkg.PkgPath != "github.com/go-delve/delve/service/rpc2" {
+		if pkg.PkgPath != "github.com/undoio/delve/service/rpc2" {
 			return true
 		}
 		t.Logf("package found: %v", pkg.PkgPath)
