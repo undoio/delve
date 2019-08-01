@@ -60,8 +60,8 @@ func UndoRecord(cmd []string, wd string, quiet bool) (recording string, err erro
 		// to get all debug information out of undodb.
 		// Set an empty UNDO_debug_filename to get all debug
 		// output on stderr.
-		lrcmd.Env = append(lrcmd.Env, "UNDO_debug_filename=")
-		lrcmd.Env = append(lrcmd.Env, "UNDO_debug_level=1")
+		//lrcmd.Env = append(lrcmd.Env, "UNDO_debug_filename=")
+		//lrcmd.Env = append(lrcmd.Env, "UNDO_debug_level=1")
 		lrcmd.Stdout = os.Stdout
 		lrcmd.Stderr = os.Stderr
 	}
@@ -109,8 +109,8 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 		// to get all debug information out of undodb.
 		// Set an empty UNDO_debug_filename to get all debug
 		// output on stderr.
-		servercmd.Env = append(servercmd.Env, "UNDO_debug_filename=")
-		servercmd.Env = append(servercmd.Env, "UNDO_debug_level=1")
+		//servercmd.Env = append(servercmd.Env, "UNDO_debug_filename=")
+		//servercmd.Env = append(servercmd.Env, "UNDO_debug_level=1")
 		servercmd.Stdout = os.Stdout
 		servercmd.Stderr = os.Stderr
 	}
