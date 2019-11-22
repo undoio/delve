@@ -103,6 +103,9 @@ func (r *SplicedMemory) ReadMemory(buf []byte, addr uintptr) (n int, err error) 
 			return n, fmt.Errorf("hit unmapped area at %v after %v bytes", addr, n)
 		}
 
+		// The reading of the memory has been started after the first iteration
+		started = true
+
 		// Don't go past the region.
 		pb := buf
 		if addr+uintptr(len(buf)) > entry.offset+entry.length {
@@ -110,8 +113,11 @@ func (r *SplicedMemory) ReadMemory(buf []byte, addr uintptr) (n int, err error) 
 		}
 		pn, err := entry.reader.ReadMemory(pb, addr)
 		n += pn
-		if err != nil || pn != len(pb) {
-			return n, err
+		if err != nil {
+			return n, fmt.Errorf("error while reading spliced memory at %#x: %v", addr, err)
+		}
+		if pn != len(pb) {
+			return n, nil
 		}
 		buf = buf[pn:]
 		addr += uintptr(pn)
@@ -340,7 +346,7 @@ func (t *Thread) Blocked() bool {
 
 // SetCurrentBreakpoint will always just return nil
 // for core files, as there are no breakpoints in core files.
-func (t *Thread) SetCurrentBreakpoint() error {
+func (t *Thread) SetCurrentBreakpoint(adjustPC bool) error {
 	return nil
 }
 

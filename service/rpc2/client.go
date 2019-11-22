@@ -62,13 +62,13 @@ func (c *RPCClient) Detach(kill bool) error {
 
 func (c *RPCClient) Restart() ([]api.DiscardedBreakpoint, error) {
 	out := new(RestartOut)
-	err := c.call("Restart", RestartIn{"", false, nil}, out)
+	err := c.call("Restart", RestartIn{"", false, nil, false}, out)
 	return out.DiscardedBreakpoints, err
 }
 
-func (c *RPCClient) RestartFrom(pos string, resetArgs bool, newArgs []string) ([]api.DiscardedBreakpoint, error) {
+func (c *RPCClient) RestartFrom(rerecord bool, pos string, resetArgs bool, newArgs []string) ([]api.DiscardedBreakpoint, error) {
 	out := new(RestartOut)
-	err := c.call("Restart", RestartIn{pos, resetArgs, newArgs}, out)
+	err := c.call("Restart", RestartIn{pos, resetArgs, newArgs, rerecord}, out)
 	return out.DiscardedBreakpoints, err
 }
 
@@ -148,15 +148,21 @@ func (c *RPCClient) StepOut() (*api.DebuggerState, error) {
 	return &out.State, err
 }
 
-func (c *RPCClient) Call(expr string, unsafe bool) (*api.DebuggerState, error) {
+func (c *RPCClient) Call(goroutineID int, expr string, unsafe bool) (*api.DebuggerState, error) {
 	var out CommandOut
-	err := c.call("Command", api.DebuggerCommand{Name: api.Call, ReturnInfoLoadConfig: c.retValLoadCfg, Expr: expr, UnsafeCall: unsafe}, &out)
+	err := c.call("Command", api.DebuggerCommand{Name: api.Call, ReturnInfoLoadConfig: c.retValLoadCfg, Expr: expr, UnsafeCall: unsafe, GoroutineID: goroutineID}, &out)
 	return &out.State, err
 }
 
 func (c *RPCClient) StepInstruction() (*api.DebuggerState, error) {
 	var out CommandOut
 	err := c.call("Command", api.DebuggerCommand{Name: api.StepInstruction}, &out)
+	return &out.State, err
+}
+
+func (c *RPCClient) ReverseStepInstruction() (*api.DebuggerState, error) {
+	var out CommandOut
+	err := c.call("Command", api.DebuggerCommand{Name: api.ReverseStepInstruction}, &out)
 	return &out.State, err
 }
 
@@ -304,10 +310,16 @@ func (c *RPCClient) ListGoroutines(start, count int) ([]*api.Goroutine, int, err
 	return out.Goroutines, out.Nextg, err
 }
 
-func (c *RPCClient) Stacktrace(goroutineId, depth int, readDefers bool, cfg *api.LoadConfig) ([]api.Stackframe, error) {
+func (c *RPCClient) Stacktrace(goroutineId, depth int, opts api.StacktraceOptions, cfg *api.LoadConfig) ([]api.Stackframe, error) {
 	var out StacktraceOut
-	err := c.call("Stacktrace", StacktraceIn{goroutineId, depth, false, readDefers, cfg}, &out)
+	err := c.call("Stacktrace", StacktraceIn{goroutineId, depth, false, false, opts, cfg}, &out)
 	return out.Locations, err
+}
+
+func (c *RPCClient) Ancestors(goroutineID int, numAncestors int, depth int) ([]api.Ancestor, error) {
+	var out AncestorsOut
+	err := c.call("Ancestors", AncestorsIn{goroutineID, numAncestors, depth}, &out)
+	return out.Ancestors, err
 }
 
 func (c *RPCClient) AttachedToExistingProcess() bool {
@@ -395,6 +407,16 @@ func (c *RPCClient) Disconnect(cont bool) error {
 	return c.client.Close()
 }
 
+func (c *RPCClient) ListDynamicLibraries() ([]api.Image, error) {
+	var out ListDynamicLibrariesOut
+	c.call("ListDynamicLibraries", ListDynamicLibrariesIn{}, &out)
+	return out.List, nil
+}
+
 func (c *RPCClient) call(method string, args, reply interface{}) error {
 	return c.client.Call("RPCServer."+method, args, reply)
+}
+
+func (c *RPCClient) CallAPI(method string, args, reply interface{}) error {
+	return c.call(method, args, reply)
 }

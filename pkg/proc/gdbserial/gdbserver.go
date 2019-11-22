@@ -69,7 +69,6 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -84,7 +83,6 @@ import (
 	"github.com/undoio/delve/pkg/proc"
 	"github.com/undoio/delve/pkg/proc/linutil"
 	isatty "github.com/mattn/go-isatty"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -124,6 +122,8 @@ type Process struct {
 
 	process  *os.Process
 	waitChan chan *os.ProcessState
+
+	onDetach func() // called after a successful detach
 
 	common proc.CommonProcess
 
@@ -172,11 +172,7 @@ type gdbRegister struct {
 // Detach.
 // Use Listen, Dial or Connect to complete connection.
 func New(process *os.Process) *Process {
-	logger := logrus.New().WithFields(logrus.Fields{"layer": "gdbconn"})
-	logger.Logger.Level = logrus.DebugLevel
-	if !logflags.GdbWire() {
-		logger.Logger.Out = ioutil.Discard
-	}
+	logger := logflags.GdbWireLogger()
 	p := &Process{
 		conn: gdbConn{
 			maxTransmitAttempts: maxTransmitAttempts,
@@ -283,7 +279,7 @@ func (p *Process) Connect(conn net.Conn, path string, pid int, debugInfoDirs []s
 // before reassigning one port they just assigned, unless there's heavy
 // churn in the ephemeral range this should work.
 func unusedPort() string {
-	listener, err := net.Listen("tcp", "localhost:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return ":8081"
 	}
@@ -339,7 +335,7 @@ func LLDBLaunch(cmd []string, wd string, foreground bool, debugInfoDirs []string
 	var port string
 	var proc *exec.Cmd
 	if _, err := os.Stat(debugserverExecutable); err == nil {
-		listener, err = net.Listen("tcp", "localhost:0")
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, err
 		}
@@ -417,7 +413,7 @@ func LLDBAttach(pid int, path string, debugInfoDirs []string) (*Process, error) 
 	var port string
 	if _, err := os.Stat(debugserverExecutable); err == nil {
 		isDebugserver = true
-		listener, err = net.Listen("tcp", "localhost:0")
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			return nil, err
 		}
@@ -606,8 +602,16 @@ func (p *Process) SelectedGoroutine() *proc.G {
 const (
 	interruptSignal  = 0x2
 	breakpointSignal = 0x5
+	faultSignal      = 0xb
 	childSignal      = 0x11
 	stopSignal       = 0x13
+
+	debugServerTargetExcBadAccess      = 0x91
+	debugServerTargetExcBadInstruction = 0x92
+	debugServerTargetExcArithmetic     = 0x93
+	debugServerTargetExcEmulation      = 0x94
+	debugServerTargetExcSoftware       = 0x95
+	debugServerTargetExcBreakpoint     = 0x96
 )
 
 // ContinueOnce will continue execution of the process until
@@ -673,7 +677,8 @@ continueLoop:
 		// The following are fake BSD-style signals sent by debugserver
 		// Unfortunately debugserver can not convert them into signals for the
 		// process so we must stop here.
-		case 0x91, 0x92, 0x93, 0x94, 0x95, 0x96: /* TARGET_EXC_BAD_ACCESS */
+		case debugServerTargetExcBadAccess, debugServerTargetExcBadInstruction, debugServerTargetExcArithmetic, debugServerTargetExcEmulation, debugServerTargetExcSoftware, debugServerTargetExcBreakpoint:
+
 			break continueLoop
 
 		// Signal 0 is returned by rr when it reaches the start of the process
@@ -690,6 +695,12 @@ continueLoop:
 
 	if err := p.updateThreadList(&tu); err != nil {
 		return nil, err
+	}
+
+	if p.BinInfo().GOOS == "linux" {
+		if err := linutil.ElfUpdateSharedObjects(p); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := p.setCurrentBreakpoints(); err != nil {
@@ -748,7 +759,7 @@ func (p *Process) StepInstruction() error {
 	if err != nil {
 		return err
 	}
-	err = thread.SetCurrentBreakpoint()
+	err = thread.SetCurrentBreakpoint(true)
 	if err != nil {
 		return err
 	}
@@ -847,6 +858,9 @@ func (p *Process) Detach(kill bool) error {
 		p.process = nil
 	}
 	p.detached = true
+	if p.onDetach != nil {
+		p.onDetach()
+	}
 	return p.bi.Close()
 }
 
@@ -1005,7 +1019,7 @@ func (p *Process) Checkpoints() ([]proc.Checkpoint, error) {
 		if err != nil {
 			return nil, fmt.Errorf("can not parse \"info checkpoints\" output line %q: %v", line, err)
 		}
-		r = append(r, proc.Checkpoint{cpid, fields[1], fields[2]})
+		r = append(r, proc.Checkpoint{ID: cpid, When: fields[1], Where: fields[2]})
 	}
 	return r, nil
 }
@@ -1060,10 +1074,6 @@ func (p *Process) Breakpoints() *proc.BreakpointMap {
 
 // FindBreakpoint returns the breakpoint at the given address.
 func (p *Process) FindBreakpoint(pc uint64) (*proc.Breakpoint, bool) {
-	// Check to see if address is past the breakpoint, (i.e. breakpoint was hit).
-	if bp, ok := p.breakpoints.M[pc-uint64(p.bi.Arch.BreakpointSize())]; ok {
-		return bp, true
-	}
 	// Directly use addr to lookup breakpoint.
 	if bp, ok := p.breakpoints.M[pc]; ok {
 		return bp, true
@@ -1229,7 +1239,7 @@ func (p *Process) setCurrentBreakpoints() error {
 	if p.threadStopInfo {
 		for _, th := range p.threads {
 			if th.setbp {
-				err := th.SetCurrentBreakpoint()
+				err := th.SetCurrentBreakpoint(true)
 				if err != nil {
 					return err
 				}
@@ -1239,7 +1249,7 @@ func (p *Process) setCurrentBreakpoints() error {
 	if !p.threadStopInfo {
 		for _, th := range p.threads {
 			if th.CurrentBreakpoint.Breakpoint == nil {
-				err := th.SetCurrentBreakpoint()
+				err := th.SetCurrentBreakpoint(true)
 				if err != nil {
 					return err
 				}
@@ -1319,8 +1329,7 @@ func (t *Thread) stepInstruction(tu *threadUpdater) error {
 		}
 		defer t.p.conn.setBreakpoint(pc)
 	}
-	_, _, err := t.p.conn.step(t.strID, tu)
-	return err
+	return t.p.conn.step(t.strID, tu, false)
 }
 
 // StepInstruction will step exactly 1 CPU instruction.
@@ -1495,7 +1504,9 @@ func (t *Thread) clearBreakpointState() {
 }
 
 // SetCurrentBreakpoint will find and set the threads current breakpoint.
-func (t *Thread) SetCurrentBreakpoint() error {
+func (t *Thread) SetCurrentBreakpoint(adjustPC bool) error {
+	// adjustPC is ignored, it is the stub's responsibiility to set the PC
+	// address correctly after hitting a breakpoint.
 	t.clearBreakpointState()
 	regs, err := t.Registers(false)
 	if err != nil {
@@ -1753,9 +1764,12 @@ func (t *Thread) SetDX(dx uint64) error {
 	return t.p.conn.writeRegister(t.strID, reg.regnum, reg.value)
 }
 
-func (regs *gdbRegisters) Slice() []proc.Register {
+func (regs *gdbRegisters) Slice(floatingPoint bool) []proc.Register {
 	r := make([]proc.Register, 0, len(regs.regsInfo))
 	for _, reginfo := range regs.regsInfo {
+		if reginfo.Group == "float" && !floatingPoint {
+			continue
+		}
 		switch {
 		case reginfo.Name == "eflags":
 			r = proc.AppendEflagReg(r, reginfo.Name, uint64(binary.LittleEndian.Uint32(regs.regs[reginfo.Name].value)))
@@ -1768,6 +1782,9 @@ func (regs *gdbRegisters) Slice() []proc.Register {
 		case reginfo.Bitsize == 64:
 			r = proc.AppendQwordReg(r, reginfo.Name, binary.LittleEndian.Uint64(regs.regs[reginfo.Name].value))
 		case reginfo.Bitsize == 80:
+			if !floatingPoint {
+				continue
+			}
 			idx := 0
 			for _, stprefix := range []string{"stmm", "st"} {
 				if strings.HasPrefix(reginfo.Name, stprefix) {
@@ -1779,10 +1796,12 @@ func (regs *gdbRegisters) Slice() []proc.Register {
 			r = proc.AppendX87Reg(r, idx, binary.LittleEndian.Uint16(value[8:]), binary.LittleEndian.Uint64(value[:8]))
 
 		case reginfo.Bitsize == 128:
-			r = proc.AppendSSEReg(r, strings.ToUpper(reginfo.Name), regs.regs[reginfo.Name].value)
+			if floatingPoint {
+				r = proc.AppendSSEReg(r, strings.ToUpper(reginfo.Name), regs.regs[reginfo.Name].value)
+			}
 
 		case reginfo.Bitsize == 256:
-			if !strings.HasPrefix(strings.ToLower(reginfo.Name), "ymm") {
+			if !strings.HasPrefix(strings.ToLower(reginfo.Name), "ymm") || !floatingPoint {
 				continue
 			}
 

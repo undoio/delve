@@ -100,13 +100,14 @@ func ThreadStacktrace(thread Thread, depth int) ([]Stackframe, error) {
 		if err != nil {
 			return nil, err
 		}
-		it := newStackIterator(thread.BinInfo(), thread, thread.BinInfo().Arch.RegistersToDwarfRegisters(regs, thread.BinInfo().staticBase), 0, nil, -1, nil)
+		so := thread.BinInfo().PCToImage(regs.PC())
+		it := newStackIterator(thread.BinInfo(), thread, thread.BinInfo().Arch.RegistersToDwarfRegisters(so.StaticBase, regs), 0, nil, -1, nil, 0)
 		return it.stacktrace(depth)
 	}
-	return g.Stacktrace(depth, false)
+	return g.Stacktrace(depth, 0)
 }
 
-func (g *G) stackIterator() (*stackIterator, error) {
+func (g *G) stackIterator(opts StacktraceOptions) (*stackIterator, error) {
 	stkbar, err := g.stkbar()
 	if err != nil {
 		return nil, err
@@ -117,15 +118,39 @@ func (g *G) stackIterator() (*stackIterator, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newStackIterator(g.variable.bi, g.Thread, g.variable.bi.Arch.RegistersToDwarfRegisters(regs, g.variable.bi.staticBase), g.stackhi, stkbar, g.stkbarPos, g), nil
+		so := g.variable.bi.PCToImage(regs.PC())
+		return newStackIterator(
+			g.variable.bi, g.Thread,
+			g.variable.bi.Arch.RegistersToDwarfRegisters(so.StaticBase, regs),
+			g.stackhi, stkbar, g.stkbarPos, g, opts), nil
 	}
-	return newStackIterator(g.variable.bi, g.variable.mem, g.variable.bi.Arch.GoroutineToDwarfRegisters(g), g.stackhi, stkbar, g.stkbarPos, g), nil
+	so := g.variable.bi.PCToImage(g.PC)
+	return newStackIterator(
+		g.variable.bi, g.variable.mem,
+		g.variable.bi.Arch.AddrAndStackRegsToDwarfRegisters(so.StaticBase, g.PC, g.SP, g.BP),
+		g.stackhi, stkbar, g.stkbarPos, g, opts), nil
 }
+
+type StacktraceOptions uint16
+
+const (
+	// StacktraceReadDefers requests a stacktrace decorated with deferred calls
+	// for each frame.
+	StacktraceReadDefers StacktraceOptions = 1 << iota
+
+	// StacktraceSimple requests a stacktrace where no stack switches will be
+	// attempted.
+	StacktraceSimple
+
+	// StacktraceG requests a stacktrace starting with the register
+	// values saved in the runtime.g structure.
+	StacktraceG
+)
 
 // Stacktrace returns the stack trace for a goroutine.
 // Note the locations in the array are return addresses not call addresses.
-func (g *G) Stacktrace(depth int, readDefers bool) ([]Stackframe, error) {
-	it, err := g.stackIterator()
+func (g *G) Stacktrace(depth int, opts StacktraceOptions) ([]Stackframe, error) {
+	it, err := g.stackIterator(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +158,7 @@ func (g *G) Stacktrace(depth int, readDefers bool) ([]Stackframe, error) {
 	if err != nil {
 		return nil, err
 	}
-	if readDefers {
+	if opts&StacktraceReadDefers != 0 {
 		g.readDefers(frames)
 	}
 	return frames, nil
@@ -169,7 +194,7 @@ type stackIterator struct {
 	g           *G     // the goroutine being stacktraced, nil if we are stacktracing a goroutine-less thread
 	g0_sched_sp uint64 // value of g0.sched.sp (see comments around its use)
 
-	dwarfReader *dwarf.Reader
+	opts StacktraceOptions
 }
 
 type savedLR struct {
@@ -177,7 +202,7 @@ type savedLR struct {
 	val uint64
 }
 
-func newStackIterator(bi *BinaryInfo, mem MemoryReadWriter, regs op.DwarfRegisters, stackhi uint64, stkbar []savedLR, stkbarPos int, g *G) *stackIterator {
+func newStackIterator(bi *BinaryInfo, mem MemoryReadWriter, regs op.DwarfRegisters, stackhi uint64, stkbar []savedLR, stkbarPos int, g *G, opts StacktraceOptions) *stackIterator {
 	stackBarrierFunc := bi.LookupFunc["runtime.stackBarrier"] // stack barriers were removed in Go 1.9
 	var stackBarrierPC uint64
 	if stackBarrierFunc != nil && stkbar != nil {
@@ -209,7 +234,7 @@ func newStackIterator(bi *BinaryInfo, mem MemoryReadWriter, regs op.DwarfRegiste
 			}
 		}
 	}
-	return &stackIterator{pc: regs.PC(), regs: regs, top: true, bi: bi, mem: mem, err: nil, atend: false, stackhi: stackhi, stackBarrierPC: stackBarrierPC, stkbar: stkbar, systemstack: systemstack, g: g, g0_sched_sp: g0_sched_sp, dwarfReader: bi.dwarf.Reader()}
+	return &stackIterator{pc: regs.PC(), regs: regs, top: true, bi: bi, mem: mem, err: nil, atend: false, stackhi: stackhi, stackBarrierPC: stackBarrierPC, stkbar: stkbar, systemstack: systemstack, g: g, g0_sched_sp: g0_sched_sp, opts: opts}
 }
 
 // Next points the iterator to the next stack frame.
@@ -226,8 +251,10 @@ func (it *stackIterator) Next() bool {
 		it.stkbar = it.stkbar[1:]
 	}
 
-	if it.switchStack() {
-		return true
+	if it.opts&StacktraceSimple == 0 {
+		if it.switchStack() {
+			return true
+		}
 	}
 
 	if it.frame.Ret <= 0 {
@@ -318,8 +345,28 @@ func (it *stackIterator) switchStack() bool {
 		it.atend = true
 		return true
 
+	case "runtime.mstart":
+		// Calls to runtime.systemstack will switch to the systemstack then:
+		// 1. alter the goroutine stack so that it looks like systemstack_switch
+		//    was called
+		// 2. alter the system stack so that it looks like the bottom-most frame
+		//    belongs to runtime.mstart
+		// If we find a runtime.mstart frame on the system stack of a goroutine
+		// parked on runtime.systemstack_switch we assume runtime.systemstack was
+		// called and continue tracing from the parked position.
+
+		if it.top || !it.systemstack || it.g == nil {
+			return false
+		}
+		if fn := it.bi.PCToFunc(it.g.PC); fn == nil || fn.Name != "runtime.systemstack_switch" {
+			return false
+		}
+
+		it.switchToGoroutineStack()
+		return true
+
 	default:
-		if it.systemstack && it.top && it.g != nil && strings.HasPrefix(it.frame.Current.Fn.Name, "runtime.") {
+		if it.systemstack && it.top && it.g != nil && strings.HasPrefix(it.frame.Current.Fn.Name, "runtime.") && it.frame.Current.Fn.Name != "runtime.fatalthrow" {
 			// The runtime switches to the system stack in multiple places.
 			// This usually happens through a call to runtime.systemstack but there
 			// are functions that switch to the system stack manually (for example
@@ -327,16 +374,25 @@ func (it *stackIterator) switchStack() bool {
 			// Since we are only interested in printing the system stack for cgo
 			// calls we switch directly to the goroutine stack if we detect that the
 			// function at the top of the stack is a runtime function.
-			it.systemstack = false
-			it.top = false
-			it.pc = it.g.PC
-			it.regs.Reg(it.regs.SPRegNum).Uint64Val = it.g.SP
-			it.regs.Reg(it.regs.BPRegNum).Uint64Val = it.g.BP
+			//
+			// The function "runtime.fatalthrow" is deliberately excluded from this
+			// because it can end up in the stack during a cgo call and switching to
+			// the goroutine stack will exclude all the C functions from the stack
+			// trace.
+			it.switchToGoroutineStack()
 			return true
 		}
 
 		return false
 	}
+}
+
+func (it *stackIterator) switchToGoroutineStack() {
+	it.systemstack = false
+	it.top = false
+	it.pc = it.g.PC
+	it.regs.Reg(it.regs.SPRegNum).Uint64Val = it.g.SP
+	it.regs.Reg(it.regs.BPRegNum).Uint64Val = it.g.BP
 }
 
 // Frame returns the frame the iterator is pointing at.
@@ -353,8 +409,9 @@ func (it *stackIterator) Err() error {
 // frameBase calculates the frame base pseudo-register for DWARF for fn and
 // the current frame.
 func (it *stackIterator) frameBase(fn *Function) int64 {
-	it.dwarfReader.Seek(fn.offset)
-	e, err := it.dwarfReader.Next()
+	rdr := fn.cu.image.dwarfReader
+	rdr.Seek(fn.offset)
+	e, err := rdr.Next()
 	if err != nil {
 		return 0
 	}
@@ -375,36 +432,21 @@ func (it *stackIterator) newStackframe(ret, retaddr uint64) Stackframe {
 		it.regs.FrameBase = it.frameBase(fn)
 	}
 	r := Stackframe{Current: Location{PC: it.pc, File: f, Line: l, Fn: fn}, Regs: it.regs, Ret: ret, addrret: retaddr, stackHi: it.stackhi, SystemStack: it.systemstack, lastpc: it.pc}
-	if !it.top {
-		fnname := ""
-		if r.Current.Fn != nil {
-			fnname = r.Current.Fn.Name
-		}
-		switch fnname {
+	r.Call = r.Current
+	if !it.top && r.Current.Fn != nil && it.pc != r.Current.Fn.Entry {
+		// if the return address is the entry point of the function that
+		// contains it then this is some kind of fake return frame (for example
+		// runtime.sigreturn) that didn't actually call the current frame,
+		// attempting to get the location of the CALL instruction would just
+		// obfuscate what's going on, since there is no CALL instruction.
+		switch r.Current.Fn.Name {
 		case "runtime.mstart", "runtime.systemstack_switch":
 			// these frames are inserted by runtime.systemstack and there is no CALL
 			// instruction to look for at pc - 1
-			r.Call = r.Current
 		default:
-			if r.Current.Fn != nil && it.pc == r.Current.Fn.Entry {
-				// if the return address is the entry point of the function that
-				// contains it then this is some kind of fake return frame (for example
-				// runtime.sigreturn) that didn't actually call the current frame,
-				// attempting to get the location of the CALL instruction would just
-				// obfuscate what's going on, since there is no CALL instruction.
-				r.Call = r.Current
-			} else {
-				r.lastpc = it.pc - 1
-				r.Call.File, r.Call.Line, r.Call.Fn = it.bi.PCToLine(it.pc - 1)
-				if r.Call.Fn == nil {
-					r.Call.File = "?"
-					r.Call.Line = -1
-				}
-				r.Call.PC = r.Current.PC
-			}
+			r.lastpc = it.pc - 1
+			r.Call.File, r.Call.Line = r.Current.Fn.cu.lineInfo.PCToLine(r.Current.Fn.Entry, it.pc-1)
 		}
-	} else {
-		r.Call = r.Current
 	}
 	return r
 }
@@ -412,6 +454,10 @@ func (it *stackIterator) newStackframe(ret, retaddr uint64) Stackframe {
 func (it *stackIterator) stacktrace(depth int) ([]Stackframe, error) {
 	if depth < 0 {
 		return nil, errors.New("negative maximum stack depth")
+	}
+	if it.opts&StacktraceG != 0 && it.g != nil {
+		it.switchToGoroutineStack()
+		it.top = true
 	}
 	frames := make([]Stackframe, 0, depth+1)
 	for it.Next() {
@@ -442,9 +488,11 @@ func (it *stackIterator) appendInlineCalls(frames []Stackframe, frame Stackframe
 		callpc--
 	}
 
-	irdr := reader.InlineStack(it.bi.dwarf, frame.Call.Fn.offset, reader.ToRelAddr(callpc, it.bi.staticBase))
+	image := frame.Call.Fn.cu.image
+
+	irdr := reader.InlineStack(image.dwarf, frame.Call.Fn.offset, reader.ToRelAddr(callpc, image.StaticBase))
 	for irdr.Next() {
-		entry, offset := reader.LoadAbstractOrigin(irdr.Entry(), it.dwarfReader)
+		entry, offset := reader.LoadAbstractOrigin(irdr.Entry(), image.dwarfReader)
 
 		fnname, okname := entry.Val(dwarf.AttrName).(string)
 		fileidx, okfileidx := entry.Val(dwarf.AttrCallFile).(int64)
@@ -498,11 +546,13 @@ func (it *stackIterator) advanceRegs() (callFrameRegs op.DwarfRegisters, ret uin
 	cfareg, err := it.executeFrameRegRule(0, framectx.CFA, 0)
 	if cfareg == nil {
 		it.err = fmt.Errorf("CFA becomes undefined at PC %#x", it.pc)
-		return op.DwarfRegisters{StaticBase: it.bi.staticBase}, 0, 0
+		return op.DwarfRegisters{}, 0, 0
 	}
 	it.regs.CFA = int64(cfareg.Uint64Val)
 
-	callFrameRegs = op.DwarfRegisters{StaticBase: it.bi.staticBase, ByteOrder: it.regs.ByteOrder, PCRegNum: it.regs.PCRegNum, SPRegNum: it.regs.SPRegNum, BPRegNum: it.regs.BPRegNum}
+	callimage := it.bi.PCToImage(it.pc)
+
+	callFrameRegs = op.DwarfRegisters{StaticBase: callimage.StaticBase, ByteOrder: it.regs.ByteOrder, PCRegNum: it.regs.PCRegNum, SPRegNum: it.regs.SPRegNum, BPRegNum: it.regs.BPRegNum}
 
 	// According to the standard the compiler should be responsible for emitting
 	// rules for the RSP register so that it can then be used to calculate CFA,
@@ -714,8 +764,9 @@ func (d *Defer) EvalScope(thread Thread) (*EvalScope, error) {
 	scope.Regs.CFA = (int64(d.variable.Addr) + d.variable.RealType.Common().ByteSize)
 	scope.Regs.Regs[scope.Regs.SPRegNum].Uint64Val = uint64(scope.Regs.CFA - int64(bi.Arch.PtrSize()))
 
-	bi.dwarfReader.Seek(scope.Fn.offset)
-	e, err := bi.dwarfReader.Next()
+	rdr := scope.Fn.cu.image.dwarfReader
+	rdr.Seek(scope.Fn.offset)
+	e, err := rdr.Next()
 	if err != nil {
 		return nil, fmt.Errorf("could not read DWARF function entry: %v", err)
 	}

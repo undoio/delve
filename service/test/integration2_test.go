@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/rpc"
+	"net/rpc/jsonrpc"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -38,7 +40,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "unknown build mode %q", buildMode)
 		os.Exit(1)
 	}
-	logflags.Setup(logOutput != "", logOutput)
+	logflags.Setup(logOutput != "", logOutput, "")
 	os.Exit(protest.RunTestsWithFixtures(m))
 }
 
@@ -48,7 +50,7 @@ func withTestClient2(name string, t *testing.T, fn func(c service.Client)) {
 	})
 }
 
-func withTestClient2Extended(name string, t *testing.T, fn func(c service.Client, fixture protest.Fixture)) {
+func startServer(name string, t *testing.T) (clientConn net.Conn, fixture protest.Fixture) {
 	if testBackend == "rr" {
 		protest.MustHaveRecordingAllowed(t)
 	}
@@ -58,22 +60,24 @@ func withTestClient2Extended(name string, t *testing.T, fn func(c service.Client
 	if buildMode == "pie" {
 		buildFlags = protest.BuildModePIE
 	}
-	fixture := protest.BuildFixture(name, buildFlags)
+	fixture = protest.BuildFixture(name, buildFlags)
 	server := rpccommon.NewServer(&service.Config{
-		Listener:    listener,
-		ProcessArgs: []string{fixture.Path},
-		Backend:     testBackend,
+		Listener:       listener,
+		ProcessArgs:    []string{fixture.Path},
+		Backend:        testBackend,
+		CheckGoVersion: true,
 	})
 	if err := server.Run(); err != nil {
 		t.Fatal(err)
 	}
+	return clientConn, fixture
+}
+
+func withTestClient2Extended(name string, t *testing.T, fn func(c service.Client, fixture protest.Fixture)) {
+	clientConn, fixture := startServer(name, t)
 	client := rpc2.NewClientFromConn(clientConn)
 	defer func() {
-		dir, _ := client.TraceDirectory()
 		client.Detach(true)
-		if dir != "" {
-			protest.SafeRemoveAll(dir)
-		}
 	}()
 
 	fn(client, fixture)
@@ -86,7 +90,7 @@ func TestRunWithInvalidPath(t *testing.T) {
 		// inferior returned an error. Therefore we have to ignore errors from rr.
 		return
 	}
-	listener, err := net.Listen("tcp", "localhost:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("couldn't start listener: %s\n", err)
 	}
@@ -805,7 +809,7 @@ func TestClientServer_FullStacktrace(t *testing.T) {
 		assertNoError(err, t, "GoroutinesInfo()")
 		found := make([]bool, 10)
 		for _, g := range gs {
-			frames, err := c.Stacktrace(g.ID, 10, false, &normalLoadConfig)
+			frames, err := c.Stacktrace(g.ID, 10, 0, &normalLoadConfig)
 			assertNoError(err, t, fmt.Sprintf("Stacktrace(%d)", g.ID))
 			for i, frame := range frames {
 				if frame.Function == nil {
@@ -839,7 +843,7 @@ func TestClientServer_FullStacktrace(t *testing.T) {
 			t.Fatalf("Continue(): %v\n", state.Err)
 		}
 
-		frames, err := c.Stacktrace(-1, 10, false, &normalLoadConfig)
+		frames, err := c.Stacktrace(-1, 10, 0, &normalLoadConfig)
 		assertNoError(err, t, "Stacktrace")
 
 		cur := 3
@@ -918,7 +922,7 @@ func TestIssue355(t *testing.T) {
 		assertError(err, t, "ListRegisters()")
 		_, _, err = c.ListGoroutines(0, 0)
 		assertError(err, t, "ListGoroutines()")
-		_, err = c.Stacktrace(gid, 10, false, &normalLoadConfig)
+		_, err = c.Stacktrace(gid, 10, 0, &normalLoadConfig)
 		assertError(err, t, "Stacktrace()")
 		_, err = c.FindLocation(api.EvalScope{gid, 0, 0}, "+1")
 		assertError(err, t, "FindLocation()")
@@ -1041,12 +1045,15 @@ func TestNegativeStackDepthBug(t *testing.T) {
 		ch := c.Continue()
 		state := <-ch
 		assertNoError(state.Err, t, "Continue()")
-		_, err = c.Stacktrace(-1, -2, false, &normalLoadConfig)
+		_, err = c.Stacktrace(-1, -2, 0, &normalLoadConfig)
 		assertError(err, t, "Stacktrace()")
 	})
 }
 
 func TestClientServer_CondBreakpoint(t *testing.T) {
+	if runtime.GOOS == "freebsd" {
+		t.Skip("test is not valid on FreeBSD")
+	}
 	protest.AllowRecording(t)
 	withTestClient2("parallel_next", t, func(c service.Client) {
 		bp, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.sayhi", Line: 1})
@@ -1077,6 +1084,12 @@ func TestClientServer_CondBreakpoint(t *testing.T) {
 	})
 }
 
+func clientEvalVariable(t *testing.T, c service.Client, expr string) *api.Variable {
+	v, err := c.EvalVariable(api.EvalScope{GoroutineID: -1}, expr, normalLoadConfig)
+	assertNoError(err, t, fmt.Sprintf("EvalVariable(%s)", expr))
+	return v
+}
+
 func TestSkipPrologue(t *testing.T) {
 	withTestClient2("locationsprog2", t, func(c service.Client) {
 		<-c.Continue()
@@ -1085,7 +1098,7 @@ func TestSkipPrologue(t *testing.T) {
 		findLocationHelper(t, c, "*fn1", false, 1, afunction)
 		findLocationHelper(t, c, "locationsprog2.go:8", false, 1, afunction)
 
-		afunction0 := findLocationHelper(t, c, "main.afunction:0", false, 1, 0)[0]
+		afunction0 := uint64(clientEvalVariable(t, c, "main.afunction").Addr)
 
 		if afunction == afunction0 {
 			t.Fatal("Skip prologue failed")
@@ -1096,21 +1109,21 @@ func TestSkipPrologue(t *testing.T) {
 func TestSkipPrologue2(t *testing.T) {
 	withTestClient2("callme", t, func(c service.Client) {
 		callme := findLocationHelper(t, c, "main.callme", false, 1, 0)[0]
-		callmeZ := findLocationHelper(t, c, "main.callme:0", false, 1, 0)[0]
+		callmeZ := uint64(clientEvalVariable(t, c, "main.callme").Addr)
 		findLocationHelper(t, c, "callme.go:5", false, 1, callme)
 		if callme == callmeZ {
 			t.Fatal("Skip prologue failed")
 		}
 
 		callme2 := findLocationHelper(t, c, "main.callme2", false, 1, 0)[0]
-		callme2Z := findLocationHelper(t, c, "main.callme2:0", false, 1, 0)[0]
+		callme2Z := uint64(clientEvalVariable(t, c, "main.callme2").Addr)
 		findLocationHelper(t, c, "callme.go:12", false, 1, callme2)
 		if callme2 == callme2Z {
 			t.Fatal("Skip prologue failed")
 		}
 
 		callme3 := findLocationHelper(t, c, "main.callme3", false, 1, 0)[0]
-		callme3Z := findLocationHelper(t, c, "main.callme3:0", false, 1, 0)[0]
+		callme3Z := uint64(clientEvalVariable(t, c, "main.callme3").Addr)
 		ver, _ := goversion.Parse(runtime.Version())
 		if ver.Major < 0 || ver.AfterOrEqual(goversion.GoVer18Beta) {
 			findLocationHelper(t, c, "callme.go:19", false, 1, callme3)
@@ -1130,17 +1143,22 @@ func TestSkipPrologue2(t *testing.T) {
 func TestIssue419(t *testing.T) {
 	// Calling service/rpc.(*Client).Halt could cause a crash because both Halt and Continue simultaneously
 	// try to read 'runtime.g' and debug/dwarf.Data.Type is not thread safe
+	finish := make(chan struct{})
 	withTestClient2("issue419", t, func(c service.Client) {
 		go func() {
+			defer close(finish)
 			rand.Seed(time.Now().Unix())
 			d := time.Duration(rand.Intn(4) + 1)
 			time.Sleep(d * time.Second)
+			t.Logf("halt")
 			_, err := c.Halt()
 			assertNoError(err, t, "RequestManualStop()")
 		}()
 		statech := c.Continue()
 		state := <-statech
 		assertNoError(state.Err, t, "Continue()")
+		t.Logf("done")
+		<-finish
 	})
 }
 
@@ -1492,7 +1510,7 @@ func TestAcceptMulticlient(t *testing.T) {
 	if testBackend == "rr" {
 		t.Skip("recording not allowed for TestAcceptMulticlient")
 	}
-	listener, err := net.Listen("tcp", "localhost:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("couldn't start listener: %s\n", err)
 	}
@@ -1541,7 +1559,7 @@ func TestClientServerFunctionCall(t *testing.T) {
 		state := <-c.Continue()
 		assertNoError(state.Err, t, "Continue()")
 		beforeCallFn := state.CurrentThread.Function.Name()
-		state, err := c.Call("call1(one, two)", false)
+		state, err := c.Call(-1, "call1(one, two)", false)
 		assertNoError(err, t, "Call()")
 		t.Logf("returned to %q", state.CurrentThread.Function.Name())
 		if state.CurrentThread.Function.Name() != beforeCallFn {
@@ -1583,7 +1601,8 @@ func TestClientServerFunctionCallBadPos(t *testing.T) {
 		state = <-c.Continue()
 		assertNoError(state.Err, t, "Continue()")
 
-		state, err = c.Call("main.call1(main.zero, main.zero)", false)
+		c.SetReturnValuesLoadConfig(&normalLoadConfig)
+		state, err = c.Call(-1, "main.call1(main.zero, main.zero)", false)
 		if err == nil || err.Error() != "call not at safe point" {
 			t.Fatalf("wrong error or no error: %v", err)
 		}
@@ -1597,7 +1616,7 @@ func TestClientServerFunctionCallPanic(t *testing.T) {
 		c.SetReturnValuesLoadConfig(&normalLoadConfig)
 		state := <-c.Continue()
 		assertNoError(state.Err, t, "Continue()")
-		state, err := c.Call("callpanic()", false)
+		state, err := c.Call(-1, "callpanic()", false)
 		assertNoError(err, t, "Call()")
 		t.Logf("at: %s:%d", state.CurrentThread.File, state.CurrentThread.Line)
 		if state.CurrentThread.ReturnValues == nil {
@@ -1623,7 +1642,7 @@ func TestClientServerFunctionCallStacktrace(t *testing.T) {
 		c.SetReturnValuesLoadConfig(&api.LoadConfig{false, 0, 2048, 0, 0})
 		state := <-c.Continue()
 		assertNoError(state.Err, t, "Continue()")
-		state, err := c.Call("callstacktrace()", false)
+		state, err := c.Call(-1, "callstacktrace()", false)
 		assertNoError(err, t, "Call()")
 		t.Logf("at: %s:%d", state.CurrentThread.File, state.CurrentThread.Line)
 		if state.CurrentThread.ReturnValues == nil {
@@ -1637,6 +1656,129 @@ func TestClientServerFunctionCallStacktrace(t *testing.T) {
 
 		if !strings.Contains(st, "main.callstacktrace") || !strings.Contains(st, "main.main") || !strings.Contains(st, "runtime.main") {
 			t.Fatal("bad stacktrace returned")
+		}
+	})
+}
+
+func TestAncestors(t *testing.T) {
+	if !goversion.VersionAfterOrEqual(runtime.Version(), 1, 11) {
+		t.Skip("not supported on Go <= 1.10")
+	}
+	savedGodebug := os.Getenv("GODEBUG")
+	os.Setenv("GODEBUG", "tracebackancestors=100")
+	defer os.Setenv("GODEBUG", savedGodebug)
+	withTestClient2("testnextprog", t, func(c service.Client) {
+		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.testgoroutine", Line: -1})
+		assertNoError(err, t, "CreateBreakpoin")
+		state := <-c.Continue()
+		assertNoError(state.Err, t, "Continue()")
+		ancestors, err := c.Ancestors(-1, 1000, 1000)
+		assertNoError(err, t, "Ancestors")
+		t.Logf("ancestors: %#v\n", ancestors)
+		if len(ancestors) != 1 {
+			t.Fatalf("expected only one ancestor got %d", len(ancestors))
+		}
+
+		mainFound := false
+		for _, ancestor := range ancestors {
+			for _, frame := range ancestor.Stack {
+				if frame.Function.Name() == "main.main" {
+					mainFound = true
+				}
+			}
+		}
+		if !mainFound {
+			t.Fatal("function main.main not found in any ancestor")
+		}
+	})
+}
+
+type brokenRPCClient struct {
+	client *rpc.Client
+}
+
+func (c *brokenRPCClient) Detach(kill bool) error {
+	defer c.client.Close()
+	out := new(rpc2.DetachOut)
+	return c.call("Detach", rpc2.DetachIn{kill}, out)
+}
+
+func (c *brokenRPCClient) call(method string, args, reply interface{}) error {
+	return c.client.Call("RPCServer."+method, args, reply)
+}
+
+func TestUnknownMethodCall(t *testing.T) {
+	clientConn, _ := startServer("continuetestprog", t)
+	client := &brokenRPCClient{jsonrpc.NewClient(clientConn)}
+	client.call("SetApiVersion", api.SetAPIVersionIn{2}, &api.SetAPIVersionOut{})
+	defer client.Detach(true)
+	var out int
+	err := client.call("NonexistentRPCCall", nil, &out)
+	assertError(err, t, "call()")
+	if !strings.HasPrefix(err.Error(), "unknown method: ") {
+		t.Errorf("wrong error message: %v", err)
+	}
+}
+
+func TestIssue1703(t *testing.T) {
+	// Calling Disassemble when there is no current goroutine should work.
+	withTestClient2("testnextprog", t, func(c service.Client) {
+		locs, err := c.FindLocation(api.EvalScope{GoroutineID: -1}, "main.main")
+		assertNoError(err, t, "FindLocation")
+		t.Logf("FindLocation: %#v", locs)
+		text, err := c.DisassemblePC(api.EvalScope{GoroutineID: -1}, locs[0].PC, api.IntelFlavour)
+		assertNoError(err, t, "DisassemblePC")
+		t.Logf("text: %#v\n", text)
+	})
+}
+
+func TestRerecord(t *testing.T) {
+	protest.AllowRecording(t)
+	if testBackend != "rr" {
+		t.Skip("only valid for recorded targets")
+	}
+	withTestClient2("testrerecord", t, func(c service.Client) {
+		fp := testProgPath(t, "testrerecord")
+		_, err := c.CreateBreakpoint(&api.Breakpoint{File: fp, Line: 10})
+		assertNoError(err, t, "CreateBreakpoin")
+
+		gett := func() int {
+			state := <-c.Continue()
+			if state.Err != nil {
+				t.Fatalf("Unexpected error: %v, state: %#v", state.Err, state)
+			}
+
+			vart, err := c.EvalVariable(api.EvalScope{-1, 0, 0}, "t", normalLoadConfig)
+			assertNoError(err, t, "EvalVariable")
+			if vart.Unreadable != "" {
+				t.Fatalf("Could not read variable 't': %s\n", vart.Unreadable)
+			}
+
+			t.Logf("Value of t is %s\n", vart.Value)
+
+			vartval, err := strconv.Atoi(vart.Value)
+			assertNoError(err, t, "Parsing value of variable t")
+			return vartval
+		}
+
+		t0 := gett()
+
+		_, err = c.RestartFrom(false, "", false, nil)
+		assertNoError(err, t, "First restart")
+		t1 := gett()
+
+		if t0 != t1 {
+			t.Fatalf("Expected same value for t after restarting (without rerecording) %d %d", t0, t1)
+		}
+
+		time.Sleep(2 * time.Second) // make sure that we're not running inside the same second
+
+		_, err = c.RestartFrom(true, "", false, nil)
+		assertNoError(err, t, "Second restart")
+		t2 := gett()
+
+		if t0 == t2 {
+			t.Fatalf("Expected new value for t after restarting (with rerecording) %d %d", t0, t2)
 		}
 	})
 }

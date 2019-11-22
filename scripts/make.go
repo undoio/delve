@@ -54,6 +54,14 @@ func NewMakeCommands() *cobra.Command {
 		},
 	})
 
+	RootCommand.AddCommand(&cobra.Command{
+		Use:   "uninstall",
+		Short: "Uninstalls delve",
+		Run: func(cmd *cobra.Command, args []string) {
+			execute("go", "clean", "-i", DelveMainPackagePath)
+		},
+	})
+
 	test := &cobra.Command{
 		Use:   "test",
 		Short: "Tests delve",
@@ -64,6 +72,7 @@ Use the flags -s, -r and -b to specify which tests to run. Specifying nothing is
 	go run scripts/make.go test -s all -b default
 	go run scripts/make.go test -s basic -b lldb    # if lldb-server is installed
 	go run scripts/make.go test -s basic -b rr      # if rr is installed
+	go run scripts/make.go test -s basic -b undo    # if udb is installed
 	
 	go run scripts/make.go test -s basic -m pie     # only on linux
 	go run scripts/make.go test -s core -m pie      # only on linux
@@ -83,6 +92,7 @@ Use the flags -s, -r and -b to specify which tests to run. Specifying nothing is
 	default		the default backend
 	lldb		lldb backend
 	rr		rr backend
+	undo		UndoDB backend
 
 This option can only be specified if testset is basic or a single package.`)
 	test.PersistentFlags().StringVarP(&TestBuildMode, "test-build-mode", "m", "", `Runs tests compiling with the specified build mode, one of either:
@@ -97,8 +107,7 @@ This option can only be specified if testset is basic or a single package.`)
 		Use:   "vendor",
 		Short: "vendors dependencies",
 		Run: func(cmd *cobra.Command, args []string) {
-			execute("glide", "up", "-v")
-			execute("glide-vc", "--use-lock-file", "--no-tests", "--only-code")
+			execute("go", "mod", "vendor")
 		},
 	})
 

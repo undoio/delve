@@ -40,7 +40,7 @@ func (s *RPCServer) Restart(arg1 interface{}, arg2 *int) error {
 	if s.config.AttachPid != 0 {
 		return errors.New("cannot restart process Delve did not create")
 	}
-	_, err := s.debugger.Restart("", false, nil)
+	_, err := s.debugger.Restart(false, "", false, nil)
 	return err
 }
 
@@ -87,7 +87,7 @@ func (s *RPCServer) StacktraceGoroutine(args *StacktraceGoroutineArgs, locations
 	if args.Full {
 		loadcfg = &defaultLoadConfig
 	}
-	locs, err := s.debugger.Stacktrace(args.Id, args.Depth, false, loadcfg)
+	locs, err := s.debugger.Stacktrace(args.Id, args.Depth, 0, loadcfg)
 	if err != nil {
 		return err
 	}
@@ -317,6 +317,6 @@ type DisassembleRequest struct {
 
 func (c *RPCServer) Disassemble(args DisassembleRequest, answer *api.AsmInstructions) error {
 	var err error
-	*answer, err = c.debugger.Disassemble(args.Scope, args.StartPC, args.EndPC, args.Flavour)
+	*answer, err = c.debugger.Disassemble(args.Scope.GoroutineID, args.StartPC, args.EndPC, args.Flavour)
 	return err
 }

@@ -199,7 +199,7 @@ func TestCore(t *testing.T) {
 	var panickingStack []proc.Stackframe
 	for _, g := range gs {
 		t.Logf("Goroutine %d", g.ID)
-		stack, err := g.Stacktrace(10, false)
+		stack, err := g.Stacktrace(10, 0)
 		if err != nil {
 			t.Errorf("Stacktrace() on goroutine %v = %v", g, err)
 		}
@@ -242,7 +242,7 @@ func TestCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Couldn't get current thread registers: %v", err)
 	}
-	regslice := regs.Slice()
+	regslice := regs.Slice(true)
 	for _, reg := range regslice {
 		t.Logf("%s = %s", reg.Name, reg.Value)
 	}
@@ -311,13 +311,13 @@ func TestCoreFpRegisters(t *testing.T) {
 		{"XMM8", "0x4059999a404ccccd4059999a404ccccd"},
 	}
 
-	for _, reg := range regs.Slice() {
+	for _, reg := range regs.Slice(true) {
 		t.Logf("%s = %s", reg.Name, reg.Value)
 	}
 
 	for _, regtest := range regtests {
 		found := false
-		for _, reg := range regs.Slice() {
+		for _, reg := range regs.Slice(true) {
 			if reg.Name == regtest.name {
 				found = true
 				if !strings.HasPrefix(reg.Value, regtest.value) {
@@ -343,7 +343,7 @@ func TestCoreWithEmptyString(t *testing.T) {
 	var mainFrame *proc.Stackframe
 mainSearch:
 	for _, g := range gs {
-		stack, err := g.Stacktrace(10, false)
+		stack, err := g.Stacktrace(10, 0)
 		assertNoError(err, t, "Stacktrace()")
 		for _, frame := range stack {
 			if frame.Current.Fn != nil && frame.Current.Fn.Name == "main.main" {
@@ -390,7 +390,7 @@ func TestMinidump(t *testing.T) {
 	t.Logf("%d goroutines", len(gs))
 	foundMain, foundTime := false, false
 	for _, g := range gs {
-		stack, err := g.Stacktrace(10, false)
+		stack, err := g.Stacktrace(10, 0)
 		if err != nil {
 			t.Errorf("Stacktrace() on goroutine %v = %v", g, err)
 		}

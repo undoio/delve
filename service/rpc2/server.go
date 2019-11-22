@@ -73,6 +73,9 @@ type RestartIn struct {
 	// NewArgs are arguments to launch a new process.  They replace only the
 	// argv[1] and later. Argv[0] cannot be changed.
 	NewArgs []string
+
+	// When Rerecord is set the target will be rerecorded
+	Rerecord bool
 }
 
 type RestartOut struct {
@@ -85,7 +88,7 @@ func (s *RPCServer) Restart(arg RestartIn, out *RestartOut) error {
 		return errors.New("cannot restart process Delve did not create")
 	}
 	var err error
-	out.DiscardedBreakpoints, err = s.debugger.Restart(arg.Position, arg.ResetArgs, arg.NewArgs)
+	out.DiscardedBreakpoints, err = s.debugger.Restart(arg.Rerecord, arg.Position, arg.ResetArgs, arg.NewArgs)
 	return err
 }
 
@@ -155,7 +158,8 @@ type StacktraceIn struct {
 	Id     int
 	Depth  int
 	Full   bool
-	Defers bool // read deferred functions
+	Defers bool // read deferred functions (equivalent to passing StacktraceReadDefers in Opts)
+	Opts   api.StacktraceOptions
 	Cfg    *api.LoadConfig
 }
 
@@ -172,12 +176,29 @@ func (s *RPCServer) Stacktrace(arg StacktraceIn, out *StacktraceOut) error {
 	if cfg == nil && arg.Full {
 		cfg = &api.LoadConfig{true, 1, 64, 64, -1}
 	}
-	var err error
-	out.Locations, err = s.debugger.Stacktrace(arg.Id, arg.Depth, arg.Defers, api.LoadConfigToProc(cfg))
-	if err != nil {
-		return err
+	if arg.Defers {
+		arg.Opts |= api.StacktraceReadDefers
 	}
-	return nil
+	var err error
+	out.Locations, err = s.debugger.Stacktrace(arg.Id, arg.Depth, arg.Opts, api.LoadConfigToProc(cfg))
+	return err
+}
+
+type AncestorsIn struct {
+	GoroutineID  int
+	NumAncestors int
+	Depth        int
+}
+
+type AncestorsOut struct {
+	Ancestors []api.Ancestor
+}
+
+// Ancestors returns the stacktraces for the ancestors of a goroutine.
+func (s *RPCServer) Ancestors(arg AncestorsIn, out *AncestorsOut) error {
+	var err error
+	out.Ancestors, err = s.debugger.Ancestors(arg.GoroutineID, arg.NumAncestors, arg.Depth)
+	return err
 }
 
 type ListBreakpointsIn struct {
@@ -208,9 +229,7 @@ type CreateBreakpointOut struct {
 //
 // - If arg.Breakpoint.FunctionName is not an empty string
 // the breakpoint will be created on the specified function:line
-// location. Note that setting a breakpoint on a function's entry point
-// (line == 0) can have surprising consequences, it is advisable to
-// use line = -1 instead which will skip the prologue.
+// location.
 //
 // - Otherwise the value specified by arg.Breakpoint.Addr will be used.
 func (s *RPCServer) CreateBreakpoint(arg CreateBreakpointIn, out *CreateBreakpointOut) error {
@@ -595,7 +614,7 @@ type DisassembleOut struct {
 // Disassemble will also try to calculate the destination address of an absolute indirect CALL if it happens to be the instruction the selected goroutine is stopped at.
 func (c *RPCServer) Disassemble(arg DisassembleIn, out *DisassembleOut) error {
 	var err error
-	out.Disassemble, err = c.debugger.Disassemble(arg.Scope, arg.StartPC, arg.EndPC, arg.Flavour)
+	out.Disassemble, err = c.debugger.Disassemble(arg.Scope.GoroutineID, arg.StartPC, arg.EndPC, arg.Flavour)
 	return err
 }
 
@@ -692,5 +711,19 @@ func (s *RPCServer) FunctionReturnLocations(in FunctionReturnLocationsIn, out *F
 	*out = FunctionReturnLocationsOut{
 		Addrs: addrs,
 	}
+	return nil
+}
+
+// ListDynamicLibrariesIn holds the arguments of ListDynamicLibraries
+type ListDynamicLibrariesIn struct {
+}
+
+// ListDynamicLibrariesOut holds the return values of ListDynamicLibraries
+type ListDynamicLibrariesOut struct {
+	List []api.Image
+}
+
+func (s *RPCServer) ListDynamicLibraries(in ListDynamicLibrariesIn, out *ListDynamicLibrariesOut) error {
+	out.List = s.debugger.ListDynamicLibraries()
 	return nil
 }

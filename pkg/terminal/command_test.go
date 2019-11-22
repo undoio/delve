@@ -17,6 +17,7 @@ import (
 
 	"github.com/undoio/delve/pkg/config"
 	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/logflags"
 	"github.com/undoio/delve/pkg/proc/test"
 	"github.com/undoio/delve/service"
 	"github.com/undoio/delve/service/api"
@@ -29,12 +30,15 @@ var testBackend, buildMode string
 func TestMain(m *testing.M) {
 	flag.StringVar(&testBackend, "backend", "", "selects backend")
 	flag.StringVar(&buildMode, "test-buildmode", "", "selects build mode")
+	var logConf string
+	flag.StringVar(&logConf, "log", "", "configures logging")
 	flag.Parse()
 	test.DefaultTestBackend(&testBackend)
 	if buildMode != "" && buildMode != "pie" {
 		fmt.Fprintf(os.Stderr, "unknown build mode %q", buildMode)
 		os.Exit(1)
 	}
+	logflags.Setup(logConf != "", logConf, "")
 	os.Exit(test.RunTestsWithFixtures(m))
 }
 
@@ -70,10 +74,45 @@ func (ft *FakeTerminal) Exec(cmdstr string) (outstr string, err error) {
 	return
 }
 
+func (ft *FakeTerminal) ExecStarlark(starlarkProgram string) (outstr string, err error) {
+	outfh, err := ioutil.TempFile("", "cmdtestout")
+	if err != nil {
+		ft.t.Fatalf("could not create temporary file: %v", err)
+	}
+
+	stdout, stderr, termstdout := os.Stdout, os.Stderr, ft.Term.stdout
+	os.Stdout, os.Stderr, ft.Term.stdout = outfh, outfh, outfh
+	defer func() {
+		os.Stdout, os.Stderr, ft.Term.stdout = stdout, stderr, termstdout
+		outfh.Close()
+		outbs, err1 := ioutil.ReadFile(outfh.Name())
+		if err1 != nil {
+			ft.t.Fatalf("could not read temporary output file: %v", err)
+		}
+		outstr = string(outbs)
+		if logCommandOutput {
+			ft.t.Logf("command %q -> %q", starlarkProgram, outstr)
+		}
+		os.Remove(outfh.Name())
+	}()
+	_, err = ft.Term.starlarkEnv.Execute("<stdin>", starlarkProgram, "main", nil)
+	return
+}
+
 func (ft *FakeTerminal) MustExec(cmdstr string) string {
 	outstr, err := ft.Exec(cmdstr)
 	if err != nil {
+		ft.t.Errorf("output of %q: %q", cmdstr, outstr)
 		ft.t.Fatalf("Error executing <%s>: %v", cmdstr, err)
+	}
+	return outstr
+}
+
+func (ft *FakeTerminal) MustExecStarlark(starlarkProgram string) string {
+	outstr, err := ft.ExecStarlark(starlarkProgram)
+	if err != nil {
+		ft.t.Errorf("output of %q: %q", starlarkProgram, outstr)
+		ft.t.Fatalf("Error executing <%s>: %v", starlarkProgram, err)
 	}
 	return outstr
 }
@@ -104,7 +143,7 @@ func withTestTerminalBuildFlags(name string, t testing.TB, buildFlags test.Build
 		test.MustHaveRecordingAllowed(t)
 	}
 	os.Setenv("TERM", "dumb")
-	listener, err := net.Listen("tcp", "localhost:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("couldn't start listener: %s\n", err)
 	}
@@ -122,11 +161,7 @@ func withTestTerminalBuildFlags(name string, t testing.TB, buildFlags test.Build
 	}
 	client := rpc2.NewClient(listener.Addr().String())
 	defer func() {
-		dir, _ := client.TraceDirectory()
 		client.Detach(true)
-		if dir != "" {
-			test.SafeRemoveAll(dir)
-		}
 	}()
 
 	ft := &FakeTerminal{
@@ -385,6 +420,9 @@ func TestScopePrefix(t *testing.T) {
 }
 
 func TestOnPrefix(t *testing.T) {
+	if runtime.GOOS == "freebsd" {
+		t.Skip("test is not valid on FreeBSD")
+	}
 	const prefix = "\ti: "
 	test.AllowRecording(t)
 	withTestTerminal("goroutinestackprog", t, func(term *FakeTerminal) {
@@ -404,7 +442,7 @@ func TestOnPrefix(t *testing.T) {
 			out := strings.Split(outstr, "\n")
 
 			for i := range out {
-				if !strings.HasPrefix(out[i], "\ti: ") {
+				if !strings.HasPrefix(out[i], prefix) {
 					continue
 				}
 				id, err := strconv.Atoi(out[i][len(prefix):])
@@ -438,6 +476,9 @@ func TestNoVars(t *testing.T) {
 }
 
 func TestOnPrefixLocals(t *testing.T) {
+	if runtime.GOOS == "freebsd" {
+		t.Skip("test is not valid on FreeBSD")
+	}
 	const prefix = "\ti: "
 	test.AllowRecording(t)
 	withTestTerminal("goroutinestackprog", t, func(term *FakeTerminal) {
@@ -457,7 +498,7 @@ func TestOnPrefixLocals(t *testing.T) {
 			out := strings.Split(outstr, "\n")
 
 			for i := range out {
-				if !strings.HasPrefix(out[i], "\ti: ") {
+				if !strings.HasPrefix(out[i], prefix) {
 					continue
 				}
 				id, err := strconv.Atoi(out[i][len(prefix):])
@@ -493,6 +534,9 @@ func countOccurrences(s string, needle string) int {
 }
 
 func TestIssue387(t *testing.T) {
+	if runtime.GOOS == "freebsd" {
+		t.Skip("test is not valid on FreeBSD")
+	}
 	// a breakpoint triggering during a 'next' operation will interrupt it
 	test.AllowRecording(t)
 	withTestTerminal("issue387", t, func(term *FakeTerminal) {
@@ -616,6 +660,15 @@ func TestCheckpoints(t *testing.T) {
 	})
 }
 
+func TestNextWithCount(t *testing.T) {
+	test.AllowRecording(t)
+	withTestTerminal("nextcond", t, func(term *FakeTerminal) {
+		term.MustExec("break main.main")
+		listIsAt(t, term, "continue", 8, -1, -1)
+		listIsAt(t, term, "next 2", 10, -1, -1)
+	})
+}
+
 func TestRestart(t *testing.T) {
 	withTestTerminal("restartargs", t, func(term *FakeTerminal) {
 		term.MustExec("break main.printArgs")
@@ -691,6 +744,16 @@ func TestConfig(t *testing.T) {
 	if *term.conf.MaxStringLen != 10 {
 		t.Fatalf("expected MaxStringLen 10, got: %d", *term.conf.MaxStringLen)
 	}
+	err = configureCmd(&term, callContext{}, "max-variable-recurse 4")
+	if err != nil {
+		t.Fatalf("error executing configureCmd(max-variable-recurse): %v", err)
+	}
+	if term.conf.MaxVariableRecurse == nil {
+		t.Fatalf("expected MaxVariableRecurse 4, got nil")
+	}
+	if *term.conf.MaxVariableRecurse != 4 {
+		t.Fatalf("expected MaxVariableRecurse 4, got: %d", *term.conf.MaxVariableRecurse)
+	}
 
 	err = configureCmd(&term, callContext{}, "substitute-path a b")
 	if err != nil {
@@ -733,6 +796,13 @@ func TestConfig(t *testing.T) {
 
 func TestDisassembleAutogenerated(t *testing.T) {
 	// Executing the 'disassemble' command on autogenerated code should work correctly
+
+	if goversion.VersionAfterOrEqual(runtime.Version(), 1, 13) {
+		// CL 161337 in Go 1.13 and later removes the autogenerated init function
+		// https://go-review.googlesource.com/c/go/+/161337
+		t.Skip("no autogenerated init function in Go 1.13 or later")
+	}
+
 	withTestTerminal("math", t, func(term *FakeTerminal) {
 		term.MustExec("break main.init")
 		term.MustExec("continue")
@@ -844,6 +914,40 @@ func TestTruncateStacktrace(t *testing.T) {
 		t.Logf("truncated output %q", out2)
 		if !strings.Contains(out2, stacktraceTruncatedMessage) {
 			t.Fatalf("stacktrace was not truncated")
+		}
+	})
+}
+
+func TestIssue1493(t *testing.T) {
+	// The 'regs' command without the '-a' option should only return
+	// general purpose registers.
+	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
+		r := term.MustExec("regs")
+		nr := len(strings.Split(r, "\n"))
+		t.Logf("regs: %s", r)
+		ra := term.MustExec("regs -a")
+		nra := len(strings.Split(ra, "\n"))
+		t.Logf("regs -a: %s", ra)
+		if nr > nra/2 {
+			t.Fatalf("'regs' returned too many registers (%d) compared to 'regs -a' (%d)", nr, nra)
+		}
+	})
+}
+
+func findStarFile(name string) string {
+	return filepath.Join(test.FindFixturesDir(), name+".star")
+}
+
+func TestIssue1598(t *testing.T) {
+	test.MustSupportFunctionCalls(t, testBackend)
+	withTestTerminal("issue1598", t, func(term *FakeTerminal) {
+		term.MustExec("break issue1598.go:5")
+		term.MustExec("continue")
+		term.MustExec("config max-string-len 500")
+		r := term.MustExec("call x()")
+		t.Logf("result %q", r)
+		if !strings.Contains(r, "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut \\nlabore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut") {
+			t.Fatalf("wrong value returned")
 		}
 	})
 }

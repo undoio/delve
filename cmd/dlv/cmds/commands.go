@@ -30,8 +30,12 @@ var (
 	Log bool
 	// LogOutput is a comma separated list of components that should produce debug output.
 	LogOutput string
+	// LogDest is the file path or file descriptor where logs should go.
+	LogDest string
 	// Headless is whether to run without terminal.
 	Headless bool
+	// ContinueOnStart is whether to continue the process on startup
+	ContinueOnStart bool
 	// APIVersion is the requested API version while running headless
 	APIVersion int
 	// AcceptMulti allows multiple clients to connect to the same server
@@ -47,6 +51,11 @@ var (
 
 	// Backend selection
 	Backend string
+
+	// CheckGoVersion is true if the debugger should check the version of Go
+	// used to compile the executable and refuse to work on incompatible
+	// versions.
+	CheckGoVersion bool
 
 	// RootCommand is the root of the command tree.
 	RootCommand *cobra.Command
@@ -90,30 +99,20 @@ func New(docCall bool) *cobra.Command {
 		Long:  dlvCommandLongDesc,
 	}
 
-	RootCommand.PersistentFlags().StringVarP(&Addr, "listen", "l", "localhost:0", "Debugging server listen address.")
+	RootCommand.PersistentFlags().StringVarP(&Addr, "listen", "l", "127.0.0.1:0", "Debugging server listen address.")
+
 	RootCommand.PersistentFlags().BoolVarP(&Log, "log", "", false, "Enable debugging server logging.")
-	RootCommand.PersistentFlags().StringVarP(&LogOutput, "log-output", "", "", `Comma separated list of components that should produce debug output, possible values:
-	debugger	Log debugger commands
-	gdbwire		Log connection to gdbserial backend
-	lldbout		Copy output from debugserver/lldb to standard output
-	debuglineerr	Log recoverable errors reading .debug_line
-	rpc		Log all RPC messages
-	fncall		Log function call protocol
-	minidump	Log minidump loading
-Defaults to "debugger" when logging is enabled with --log.`)
+	RootCommand.PersistentFlags().StringVarP(&LogOutput, "log-output", "", "", `Comma separated list of components that should produce debug output (see 'dlv help log')`)
+	RootCommand.PersistentFlags().StringVarP(&LogDest, "log-dest", "", "", "Writes logs to the specified file or file descriptor (see 'dlv help log').")
+
 	RootCommand.PersistentFlags().BoolVarP(&Headless, "headless", "", false, "Run debug server only, in headless mode.")
-	RootCommand.PersistentFlags().BoolVarP(&AcceptMulti, "accept-multiclient", "", false, "Allows a headless server to accept multiple client connections. Note that the server API is not reentrant and clients will have to coordinate.")
+	RootCommand.PersistentFlags().BoolVarP(&AcceptMulti, "accept-multiclient", "", false, "Allows a headless server to accept multiple client connections.")
 	RootCommand.PersistentFlags().IntVar(&APIVersion, "api-version", 1, "Selects API version when headless.")
 	RootCommand.PersistentFlags().StringVar(&InitFile, "init", "", "Init file, executed by the terminal client.")
 	RootCommand.PersistentFlags().StringVar(&BuildFlags, "build-flags", buildFlagsDefault, "Build flags, to be passed to the compiler.")
 	RootCommand.PersistentFlags().StringVar(&WorkingDir, "wd", ".", "Working directory for running the program.")
-	RootCommand.PersistentFlags().StringVar(&Backend, "backend", "default", `Backend selection:
-	default		Uses lldb on macOS, native everywhere else.
-	native		Native backend.
-	lldb		Uses lldb-server or debugserver.
-	rr		Uses mozilla rr (https://github.com/mozilla/rr).
-	undo		Uses UndoDB (https://undo.io).
-`)
+	RootCommand.PersistentFlags().BoolVarP(&CheckGoVersion, "check-go-version", "", true, "Checks that the version of Go in use is compatible with Delve.")
+	RootCommand.PersistentFlags().StringVar(&Backend, "backend", "default", `Backend selection (see 'dlv help backend').`)
 
 	// 'attach' subcommand.
 	attachCommand := &cobra.Command{
@@ -162,7 +161,8 @@ package name and Delve will compile that package instead, and begin a new debug
 session.`,
 		Run: debugCmd,
 	}
-	debugCommand.Flags().String("output", "debug", "Output path for the binary.")
+	debugCommand.Flags().String("output", "./__debug_bin", "Output path for the binary.")
+	debugCommand.Flags().BoolVar(&ContinueOnStart, "continue", false, "Continue the debugged process on start.")
 	RootCommand.AddCommand(debugCommand)
 
 	// 'exec' subcommand.
@@ -186,6 +186,7 @@ or later, -gcflags="-N -l" on earlier versions of Go.`,
 			os.Exit(execute(0, args, conf, "", executingExistingFile))
 		},
 	}
+	execCommand.Flags().BoolVar(&ContinueOnStart, "continue", false, "Continue the debugged process on start.")
 	RootCommand.AddCommand(execCommand)
 
 	// Deprecated 'run' subcommand.
@@ -302,6 +303,48 @@ Either Mozilla rr (https://github.com/mozilla/rr) or UndoDB (https://undo.io) mu
 		RootCommand.AddCommand(replayCommand)
 	}
 
+	RootCommand.AddCommand(&cobra.Command{
+		Use:   "backend",
+		Short: "Help about the --backend flag.",
+		Long: `The --backend flag specifies which backend should be used, possible values
+are:
+
+	default		Uses lldb on macOS, native everywhere else.
+	native		Native backend.
+	lldb		Uses lldb-server or debugserver.
+	rr		Uses mozilla rr (https://github.com/mozilla/rr).
+	undo		Uses UndoDB (https://undo.io).
+
+`})
+
+	RootCommand.AddCommand(&cobra.Command{
+		Use:   "log",
+		Short: "Help about logging flags.",
+		Long: `Logging can be enabled by specifying the --log flag and using the
+--log-output flag to select which components should produce logs.
+
+The argument of --log-output must be a comma separated list of component
+names selected from this list:
+
+
+	debugger	Log debugger commands
+	gdbwire		Log connection to gdbserial backend
+	lldbout		Copy output from debugserver/lldb to standard output
+	debuglineerr	Log recoverable errors reading .debug_line
+	rpc		Log all RPC messages
+	fncall		Log function call protocol
+	minidump	Log minidump loading
+
+Additionally --log-dest can be used to specify where the logs should be
+written. 
+If the argument is a number it will be interpreted as a file descriptor,
+otherwise as a file path.
+This option will also redirect the \"API listening\" message in headless
+mode.
+
+`,
+	})
+
 	RootCommand.DisableAutoGenTag = true
 
 	return RootCommand
@@ -338,7 +381,8 @@ func debugCmd(cmd *cobra.Command, args []string) {
 
 func traceCmd(cmd *cobra.Command, args []string) {
 	status := func() int {
-		err := logflags.Setup(Log, LogOutput)
+		err := logflags.Setup(Log, LogOutput, LogDest)
+		defer logflags.Close()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 1
@@ -401,12 +445,13 @@ func traceCmd(cmd *cobra.Command, args []string) {
 
 		// Create and start a debug server
 		server := rpccommon.NewServer(&service.Config{
-			Listener:    listener,
-			ProcessArgs: processArgs,
-			AttachPid:   traceAttachPid,
-			APIVersion:  2,
-			WorkingDir:  WorkingDir,
-			Backend:     Backend,
+			Listener:       listener,
+			ProcessArgs:    processArgs,
+			AttachPid:      traceAttachPid,
+			APIVersion:     2,
+			WorkingDir:     WorkingDir,
+			Backend:        Backend,
+			CheckGoVersion: CheckGoVersion,
 		})
 		if err := server.Run(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -533,13 +578,6 @@ func connect(addr string, clientConn net.Conn, conf *config.Config, kind execute
 			}
 		}
 	}
-	if client.Recorded() && (kind == executingGeneratedFile || kind == executingGeneratedTest) {
-		// When using the rr backend remove the trace directory if we built the
-		// executable
-		if tracedir, err := client.TraceDirectory(); err == nil {
-			defer SafeRemoveAll(tracedir)
-		}
-	}
 	term := terminal.New(client, conf)
 	term.InitFile = InitFile
 	status, err := term.Run()
@@ -559,13 +597,24 @@ const (
 )
 
 func execute(attachPid int, processArgs []string, conf *config.Config, coreFile string, kind executeKind) int {
-	if err := logflags.Setup(Log, LogOutput); err != nil {
+	if err := logflags.Setup(Log, LogOutput, LogDest); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
+	defer logflags.Close()
 
 	if Headless && (InitFile != "") {
-		fmt.Fprint(os.Stderr, "Warning: init file ignored\n")
+		fmt.Fprint(os.Stderr, "Warning: init file ignored with --headless\n")
+	}
+	if ContinueOnStart {
+		if !Headless {
+			fmt.Fprint(os.Stderr, "Error: --continue only works with --headless; use an init file\n")
+			return 1
+		}
+		if !AcceptMulti {
+			fmt.Fprint(os.Stderr, "Error: --continue requires --accept-multiclient\n")
+			return 1
+		}
 	}
 
 	if !Headless && AcceptMulti {
@@ -609,6 +658,7 @@ func execute(attachPid int, processArgs []string, conf *config.Config, coreFile 
 			CoreFile:             coreFile,
 			Foreground:           Headless,
 			DebugInfoDirectories: conf.DebugInfoDirectories,
+			CheckGoVersion:       CheckGoVersion,
 
 			DisconnectChan: disconnectChan,
 		})
@@ -636,6 +686,11 @@ func execute(attachPid int, processArgs []string, conf *config.Config, coreFile 
 
 	var status int
 	if Headless {
+		if ContinueOnStart {
+			var client *rpc2.RPCClient
+			client = rpc2.NewClient(listener.Addr().String())
+			client.Disconnect(true) // true = continue after disconnect
+		}
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGINT)
 		select {
@@ -696,29 +751,4 @@ func gocommand(command string, args ...string) error {
 	goBuild := exec.Command("go", allargs...)
 	goBuild.Stderr = os.Stderr
 	return goBuild.Run()
-}
-
-// SafeRemoveAll removes dir and its contents but only as long as dir does
-// not contain directories.
-func SafeRemoveAll(dir string) {
-	dh, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	defer dh.Close()
-	fis, err := dh.Readdir(-1)
-	if err != nil {
-		return
-	}
-	for _, fi := range fis {
-		if fi.IsDir() {
-			return
-		}
-	}
-	for _, fi := range fis {
-		if err := os.Remove(filepath.Join(dir, fi.Name())); err != nil {
-			return
-		}
-	}
-	os.Remove(dir)
 }

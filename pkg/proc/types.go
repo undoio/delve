@@ -3,28 +3,15 @@ package proc
 import (
 	"bytes"
 	"debug/dwarf"
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"go/ast"
 	"go/constant"
-	"go/parser"
-	"go/token"
-	"path/filepath"
 	"reflect"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"unsafe"
 
 	"github.com/undoio/delve/pkg/dwarf/godwarf"
-	"github.com/undoio/delve/pkg/dwarf/line"
-	"github.com/undoio/delve/pkg/dwarf/op"
 	"github.com/undoio/delve/pkg/dwarf/reader"
-	"github.com/undoio/delve/pkg/goversion"
-	"github.com/undoio/delve/pkg/logflags"
-	"github.com/sirupsen/logrus"
 )
 
 // The kind field in runtime._type is a reflect.Kind value plus
@@ -55,15 +42,6 @@ const (
 	interfacetypeFieldMhdr = "mhdr"
 )
 
-// Do not call this function directly it isn't able to deal correctly with package paths
-func (bi *BinaryInfo) findType(name string) (godwarf.Type, error) {
-	off, found := bi.types[name]
-	if !found {
-		return nil, reader.TypeNotFoundErr
-	}
-	return godwarf.ReadType(bi.dwarf, off, bi.typeCache)
-}
-
 func pointerTo(typ godwarf.Type, arch Arch) godwarf.Type {
 	return &godwarf.PtrType{
 		CommonType: godwarf.CommonType{
@@ -76,112 +54,17 @@ func pointerTo(typ godwarf.Type, arch Arch) godwarf.Type {
 	}
 }
 
-func (bi *BinaryInfo) findTypeExpr(expr ast.Expr) (godwarf.Type, error) {
-	bi.loadPackageMap()
-	if lit, islit := expr.(*ast.BasicLit); islit && lit.Kind == token.STRING {
-		// Allow users to specify type names verbatim as quoted
-		// string. Useful as a catch-all workaround for cases where we don't
-		// parse/serialize types correctly or can not resolve package paths.
-		typn, _ := strconv.Unquote(lit.Value)
-		return bi.findType(typn)
-	}
-	bi.expandPackagesInType(expr)
-	if snode, ok := expr.(*ast.StarExpr); ok {
-		// Pointer types only appear in the dwarf informations when
-		// a pointer to the type is used in the target program, here
-		// we create a pointer type on the fly so that the user can
-		// specify a pointer to any variable used in the target program
-		ptyp, err := bi.findTypeExpr(snode.X)
-		if err != nil {
-			return nil, err
-		}
-		return pointerTo(ptyp, bi.Arch), nil
-	}
-	if anode, ok := expr.(*ast.ArrayType); ok {
-		// Byte array types (i.e. [N]byte) are only present in DWARF if they are
-		// used by the program, but it's convenient to make all of them available
-		// to the user so that they can be used to read arbitrary memory, byte by
-		// byte.
-
-		alen, litlen := anode.Len.(*ast.BasicLit)
-		if litlen && alen.Kind == token.INT {
-			n, _ := strconv.Atoi(alen.Value)
-			switch exprToString(anode.Elt) {
-			case "byte", "uint8":
-				btyp, err := bi.findType("uint8")
-				if err != nil {
-					return nil, err
-				}
-				return &godwarf.ArrayType{
-					CommonType: godwarf.CommonType{
-						ReflectKind: reflect.Array,
-						ByteSize:    int64(n),
-						Name:        fmt.Sprintf("[%d]uint8", n)},
-					Type:          btyp,
-					StrideBitSize: 8,
-					Count:         int64(n)}, nil
-			}
-		}
-	}
-	return bi.findType(exprToString(expr))
-}
-
-func complexType(typename string) bool {
-	for _, ch := range typename {
-		switch ch {
-		case '*', '[', '<', '{', '(', ' ':
-			return true
-		}
-	}
-	return false
-}
-
-func (bi *BinaryInfo) loadPackageMap() error {
-	if bi.packageMap != nil {
-		return nil
-	}
-	bi.packageMap = map[string]string{}
-	reader := bi.DwarfReader()
-	for entry, err := reader.Next(); entry != nil; entry, err = reader.Next() {
-		if err != nil {
-			return err
-		}
-
-		if entry.Tag != dwarf.TagTypedef && entry.Tag != dwarf.TagBaseType && entry.Tag != dwarf.TagClassType && entry.Tag != dwarf.TagStructType {
-			continue
-		}
-
-		typename, ok := entry.Val(dwarf.AttrName).(string)
-		if !ok || complexType(typename) {
-			continue
-		}
-
-		dot := strings.LastIndex(typename, ".")
-		if dot < 0 {
-			continue
-		}
-		path := typename[:dot]
-		slash := strings.LastIndex(path, "/")
-		if slash < 0 || slash+1 >= len(path) {
-			continue
-		}
-		name := path[slash+1:]
-		bi.packageMap[name] = path
-	}
-	return nil
-}
-
 type functionsDebugInfoByEntry []Function
 
 func (v functionsDebugInfoByEntry) Len() int           { return len(v) }
 func (v functionsDebugInfoByEntry) Less(i, j int) bool { return v[i].Entry < v[j].Entry }
 func (v functionsDebugInfoByEntry) Swap(i, j int)      { v[i], v[j] = v[j], v[i] }
 
-type compileUnitsByLowpc []*compileUnit
+type compileUnitsByOffset []*compileUnit
 
-func (v compileUnitsByLowpc) Len() int               { return len(v) }
-func (v compileUnitsByLowpc) Less(i int, j int) bool { return v[i].lowPC < v[j].lowPC }
-func (v compileUnitsByLowpc) Swap(i int, j int)      { v[i], v[j] = v[j], v[i] }
+func (v compileUnitsByOffset) Len() int               { return len(v) }
+func (v compileUnitsByOffset) Less(i int, j int) bool { return v[i].offset < v[j].offset }
+func (v compileUnitsByOffset) Swap(i int, j int)      { v[i], v[j] = v[j], v[i] }
 
 type packageVarsByAddr []packageVar
 
@@ -189,371 +72,24 @@ func (v packageVarsByAddr) Len() int               { return len(v) }
 func (v packageVarsByAddr) Less(i int, j int) bool { return v[i].addr < v[j].addr }
 func (v packageVarsByAddr) Swap(i int, j int)      { v[i], v[j] = v[j], v[i] }
 
-func (bi *BinaryInfo) loadDebugInfoMaps(debugLineBytes []byte, wg *sync.WaitGroup, cont func()) {
-	if wg != nil {
-		defer wg.Done()
-	}
-
-	var cu *compileUnit
-	var pu *partialUnit
-	var partialUnits = make(map[dwarf.Offset]*partialUnit)
-	var lastOffset dwarf.Offset
-
-	bi.types = make(map[string]dwarf.Offset)
-	bi.packageVars = []packageVar{}
-	bi.Functions = []Function{}
-	bi.compileUnits = []*compileUnit{}
-	bi.consts = make(map[dwarf.Offset]*constantType)
-	bi.runtimeTypeToDIE = make(map[uint64]runtimeTypeDIE)
-	reader := bi.DwarfReader()
-	ardr := bi.DwarfReader()
-	abstractOriginNameTable := make(map[dwarf.Offset]string)
-
-outer:
-	for entry, err := reader.Next(); entry != nil; entry, err = reader.Next() {
-		if err != nil {
-			break
-		}
-		lastOffset = entry.Offset
-		switch entry.Tag {
-		case dwarf.TagCompileUnit:
-			if pu != nil {
-				partialUnits[pu.entry.Offset] = pu
-				pu = nil
-			}
-			if cu != nil {
-				cu.endOffset = entry.Offset
-			}
-			cu = &compileUnit{}
-			cu.entry = entry
-			cu.startOffset = entry.Offset
-			if lang, _ := entry.Val(dwarf.AttrLanguage).(int64); lang == dwarfGoLanguage {
-				cu.isgo = true
-			}
-			cu.name, _ = entry.Val(dwarf.AttrName).(string)
-			compdir, _ := entry.Val(dwarf.AttrCompDir).(string)
-			if compdir != "" {
-				cu.name = filepath.Join(compdir, cu.name)
-			}
-			cu.ranges, _ = bi.dwarf.Ranges(entry)
-			for i := range cu.ranges {
-				cu.ranges[i][0] += bi.staticBase
-				cu.ranges[i][1] += bi.staticBase
-			}
-			if len(cu.ranges) >= 1 {
-				cu.lowPC = cu.ranges[0][0]
-			}
-			lineInfoOffset, _ := entry.Val(dwarf.AttrStmtList).(int64)
-			if lineInfoOffset >= 0 && lineInfoOffset < int64(len(debugLineBytes)) {
-				var logfn func(string, ...interface{})
-				if logflags.DebugLineErrors() {
-					logger := logrus.New().WithFields(logrus.Fields{"layer": "dwarf-line"})
-					logger.Logger.Level = logrus.DebugLevel
-					logfn = func(fmt string, args ...interface{}) {
-						logger.Printf(fmt, args)
-					}
-				}
-				cu.lineInfo = line.Parse(compdir, bytes.NewBuffer(debugLineBytes[lineInfoOffset:]), logfn, bi.staticBase)
-			}
-			cu.producer, _ = entry.Val(dwarf.AttrProducer).(string)
-			if cu.isgo && cu.producer != "" {
-				semicolon := strings.Index(cu.producer, ";")
-				if semicolon < 0 {
-					cu.optimized = goversion.ProducerAfterOrEqual(cu.producer, 1, 10)
-				} else {
-					cu.optimized = !strings.Contains(cu.producer[semicolon:], "-N") || !strings.Contains(cu.producer[semicolon:], "-l")
-					cu.producer = cu.producer[:semicolon]
-				}
-			}
-			bi.compileUnits = append(bi.compileUnits, cu)
-
-		case dwarf.TagPartialUnit:
-			if pu != nil {
-				partialUnits[pu.entry.Offset] = pu
-				pu = nil
-			}
-			pu = &partialUnit{}
-			pu.entry = entry
-			pu.types = make(map[string]dwarf.Offset)
-
-		case dwarf.TagImportedUnit:
-			if unit, exists := partialUnits[entry.Val(dwarf.AttrImport).(dwarf.Offset)]; exists {
-				for name, offset := range unit.types {
-					if pu != nil {
-						pu.types[name] = offset
-					} else {
-						if !cu.isgo {
-							name = "C." + name
-						}
-						bi.types[name] = offset
-					}
-				}
-
-				for _, pVar := range unit.variables {
-					if pu != nil {
-						pu.variables = append(pu.variables, pVar)
-					} else {
-						if !cu.isgo {
-							pVar.name = "C." + pVar.name
-						}
-						bi.packageVars = append(bi.packageVars, pVar)
-					}
-				}
-
-				for _, pCt := range unit.constants {
-					if pu != nil {
-						pu.constants = append(pu.constants, pCt)
-					} else {
-						if !cu.isgo {
-							pCt.name = "C." + pCt.name
-						}
-						ct := bi.consts[pCt.typ]
-						if ct == nil {
-							ct = &constantType{}
-							bi.consts[pCt.typ] = ct
-						}
-						ct.values = append(ct.values, constantValue{name: pCt.name, fullName: pCt.name, value: pCt.value})
-					}
-				}
-
-				for _, pFunc := range unit.functions {
-					if pu != nil {
-						pu.functions = append(pu.functions, pFunc)
-					} else {
-						if !cu.isgo {
-							pFunc.Name = "C." + pFunc.Name
-						}
-						pFunc.cu = cu
-						bi.Functions = append(bi.Functions, pFunc)
-					}
-				}
-			}
-
-		case dwarf.TagArrayType, dwarf.TagBaseType, dwarf.TagClassType, dwarf.TagStructType, dwarf.TagUnionType, dwarf.TagConstType, dwarf.TagVolatileType, dwarf.TagRestrictType, dwarf.TagEnumerationType, dwarf.TagPointerType, dwarf.TagSubroutineType, dwarf.TagTypedef, dwarf.TagUnspecifiedType:
-			if name, ok := entry.Val(dwarf.AttrName).(string); ok {
-				if pu != nil {
-					if _, exists := pu.types[name]; !exists {
-						pu.types[name] = entry.Offset
-					}
-				} else {
-					if !cu.isgo {
-						name = "C." + name
-					}
-					if _, exists := bi.types[name]; !exists {
-						bi.types[name] = entry.Offset
-					}
-				}
-			}
-			bi.registerRuntimeTypeToDIE(entry, ardr)
-			reader.SkipChildren()
-
-		case dwarf.TagVariable:
-			if n, ok := entry.Val(dwarf.AttrName).(string); ok {
-				var addr uint64
-				if loc, ok := entry.Val(dwarf.AttrLocation).([]byte); ok {
-					if len(loc) == bi.Arch.PtrSize()+1 && op.Opcode(loc[0]) == op.DW_OP_addr {
-						addr = binary.LittleEndian.Uint64(loc[1:])
-					}
-				}
-				if pu != nil {
-					pu.variables = append(pu.variables, packageVar{n, entry.Offset, addr + bi.staticBase})
-				} else {
-					if !cu.isgo {
-						n = "C." + n
-					}
-					bi.packageVars = append(bi.packageVars, packageVar{n, entry.Offset, addr + bi.staticBase})
-				}
-			}
-
-		case dwarf.TagConstant:
-			name, okName := entry.Val(dwarf.AttrName).(string)
-			typ, okType := entry.Val(dwarf.AttrType).(dwarf.Offset)
-			val, okVal := entry.Val(dwarf.AttrConstValue).(int64)
-			if okName && okType && okVal {
-				if pu != nil {
-					pu.constants = append(pu.constants, partialUnitConstant{name: name, typ: typ, value: val})
-				} else {
-					if !cu.isgo {
-						name = "C." + name
-					}
-					ct := bi.consts[typ]
-					if ct == nil {
-						ct = &constantType{}
-						bi.consts[typ] = ct
-					}
-					ct.values = append(ct.values, constantValue{name: name, fullName: name, value: val})
-				}
-			}
-
-		case dwarf.TagSubprogram:
-			ok1 := false
-			inlined := false
-			var lowpc, highpc uint64
-			if inval, ok := entry.Val(dwarf.AttrInline).(int64); ok {
-				inlined = inval == 1
-			}
-			if ranges, _ := bi.dwarf.Ranges(entry); len(ranges) == 1 {
-				ok1 = true
-				lowpc = ranges[0][0] + bi.staticBase
-				highpc = ranges[0][1] + bi.staticBase
-			}
-			name, ok2 := entry.Val(dwarf.AttrName).(string)
-			if !ok2 {
-				originOffset, hasAbstractOrigin := entry.Val(dwarf.AttrAbstractOrigin).(dwarf.Offset)
-				if hasAbstractOrigin {
-					name, ok2 = abstractOriginNameTable[originOffset]
-				}
-			}
-
-			var fn Function
-			if (ok1 == !inlined) && ok2 {
-				if inlined {
-					abstractOriginNameTable[entry.Offset] = name
-				}
-				if pu != nil {
-					fn = Function{
-						Name:  name,
-						Entry: lowpc, End: highpc,
-						offset: entry.Offset,
-						cu:     &compileUnit{},
-					}
-					pu.functions = append(pu.functions, fn)
-				} else {
-					if !cu.isgo {
-						name = "C." + name
-					}
-					fn = Function{
-						Name:  name,
-						Entry: lowpc, End: highpc,
-						offset: entry.Offset,
-						cu:     cu,
-					}
-					bi.Functions = append(bi.Functions, fn)
-				}
-			}
-			if entry.Children {
-				for {
-					entry, err = reader.Next()
-					if err != nil {
-						break outer
-					}
-					if entry.Tag == 0 {
-						break
-					}
-					if entry.Tag == dwarf.TagInlinedSubroutine {
-						originOffset := entry.Val(dwarf.AttrAbstractOrigin).(dwarf.Offset)
-						name := abstractOriginNameTable[originOffset]
-						if ranges, _ := bi.dwarf.Ranges(entry); len(ranges) == 1 {
-							ok1 = true
-							lowpc = ranges[0][0]
-							highpc = ranges[0][1]
-						}
-						callfileidx, ok1 := entry.Val(dwarf.AttrCallFile).(int64)
-						callline, ok2 := entry.Val(dwarf.AttrCallLine).(int64)
-						if ok1 && ok2 {
-							callfile := cu.lineInfo.FileNames[callfileidx-1].Path
-							cu.concreteInlinedFns = append(cu.concreteInlinedFns, inlinedFn{
-								Name:     name,
-								LowPC:    lowpc + bi.staticBase,
-								HighPC:   highpc + bi.staticBase,
-								CallFile: callfile,
-								CallLine: callline,
-								Parent:   &fn,
-							})
-						}
-					}
-					reader.SkipChildren()
-				}
-			}
-		}
-	}
-
-	if cu != nil {
-		cu.endOffset = lastOffset + 1
-	}
-
-	sort.Sort(compileUnitsByLowpc(bi.compileUnits))
-	sort.Sort(functionsDebugInfoByEntry(bi.Functions))
-	sort.Sort(packageVarsByAddr(bi.packageVars))
-
-	bi.LookupFunc = make(map[string]*Function)
-	for i := range bi.Functions {
-		bi.LookupFunc[bi.Functions[i].Name] = &bi.Functions[i]
-	}
-
-	bi.Sources = []string{}
-	for _, cu := range bi.compileUnits {
-		if cu.lineInfo != nil {
-			for _, fileEntry := range cu.lineInfo.FileNames {
-				bi.Sources = append(bi.Sources, fileEntry.Path)
-			}
-		}
-	}
-	sort.Strings(bi.Sources)
-	bi.Sources = uniq(bi.Sources)
-
-	if cont != nil {
-		cont()
-	}
+type loadDebugInfoMapsContext struct {
+	ardr                    *reader.Reader
+	abstractOriginNameTable map[dwarf.Offset]string
+	knownPackageVars        map[string]struct{}
 }
 
-func uniq(s []string) []string {
-	if len(s) <= 0 {
-		return s
-	}
-	src, dst := 1, 1
-	for src < len(s) {
-		if s[src] != s[dst-1] {
-			s[dst] = s[src]
-			dst++
-		}
-		src++
-	}
-	return s[:dst]
-}
+func newLoadDebugInfoMapsContext(bi *BinaryInfo, image *Image) *loadDebugInfoMapsContext {
+	ctxt := &loadDebugInfoMapsContext{}
 
-func (bi *BinaryInfo) expandPackagesInType(expr ast.Expr) {
-	switch e := expr.(type) {
-	case *ast.ArrayType:
-		bi.expandPackagesInType(e.Elt)
-	case *ast.ChanType:
-		bi.expandPackagesInType(e.Value)
-	case *ast.FuncType:
-		for i := range e.Params.List {
-			bi.expandPackagesInType(e.Params.List[i].Type)
-		}
-		if e.Results != nil {
-			for i := range e.Results.List {
-				bi.expandPackagesInType(e.Results.List[i].Type)
-			}
-		}
-	case *ast.MapType:
-		bi.expandPackagesInType(e.Key)
-		bi.expandPackagesInType(e.Value)
-	case *ast.ParenExpr:
-		bi.expandPackagesInType(e.X)
-	case *ast.SelectorExpr:
-		switch x := e.X.(type) {
-		case *ast.Ident:
-			if path, ok := bi.packageMap[x.Name]; ok {
-				x.Name = path
-			}
-		default:
-			bi.expandPackagesInType(e.X)
-		}
-	case *ast.StarExpr:
-		bi.expandPackagesInType(e.X)
-	default:
-		// nothing to do
-	}
-}
+	ctxt.ardr = image.DwarfReader()
+	ctxt.abstractOriginNameTable = make(map[dwarf.Offset]string)
 
-func (bi *BinaryInfo) registerRuntimeTypeToDIE(entry *dwarf.Entry, ardr *reader.Reader) {
-	if off, ok := entry.Val(godwarf.AttrGoRuntimeType).(uint64); ok {
-		if _, ok := bi.runtimeTypeToDIE[off]; !ok {
-			bi.runtimeTypeToDIE[off+bi.staticBase] = runtimeTypeDIE{entry.Offset, -1}
-		}
+	ctxt.knownPackageVars = map[string]struct{}{}
+	for _, v := range bi.packageVars {
+		ctxt.knownPackageVars[v.name] = struct{}{}
 	}
+
+	return ctxt
 }
 
 // runtimeTypeToDIE returns the DIE corresponding to the runtime._type.
@@ -566,56 +102,22 @@ func (bi *BinaryInfo) registerRuntimeTypeToDIE(entry *dwarf.Entry, ardr *reader.
 // * After go1.11 the runtimeTypeToDIE map is used to look up the address of
 //   the type and map it drectly to a DIE.
 func runtimeTypeToDIE(_type *Variable, dataAddr uintptr) (typ godwarf.Type, kind int64, err error) {
-	var go17 bool
-	var typestring *Variable
-
 	bi := _type.bi
-
-	// Determine if we are in go1.7 or later
-	typestring, err = _type.structMember("_string")
-	if err == nil {
-		typestring = typestring.maybeDereference()
-	} else {
-		err = nil
-		go17 = true
-	}
-
-	if !go17 {
-		// pre-go1.7 compatibility
-		if typestring == nil || typestring.Addr == 0 || typestring.Kind != reflect.String {
-			return nil, 0, fmt.Errorf("invalid interface type")
-		}
-		typestring.loadValue(LoadConfig{false, 0, 512, 0, 0, 0})
-		if typestring.Unreadable != nil {
-			return nil, 0, fmt.Errorf("invalid interface type: %v", typestring.Unreadable)
-		}
-
-		typename := constant.StringVal(typestring.Value)
-
-		t, err := parser.ParseExpr(typename)
-		if err != nil {
-			return nil, 0, fmt.Errorf("invalid interface type, unparsable data type: %v", err)
-		}
-
-		typ, err := bi.findTypeExpr(t)
-		if err != nil {
-			return nil, 0, fmt.Errorf("interface type %q not found for %#x: %v", typename, dataAddr, err)
-		}
-
-		return typ, 0, nil
-	}
 
 	_type = _type.maybeDereference()
 
 	// go 1.11 implementation: use extended attribute in debug_info
 
-	md, err := findModuleDataForType(bi, _type.Addr, _type.mem)
+	mds, err := loadModuleData(bi, _type.mem)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error loading module data: %v", err)
 	}
+
+	md := findModuleDataForType(bi, mds, _type.Addr, _type.mem)
 	if md != nil {
-		if rtdie, ok := bi.runtimeTypeToDIE[uint64(_type.Addr-md.types)]; ok {
-			typ, err := godwarf.ReadType(bi.dwarf, rtdie.offset, bi.typeCache)
+		so := bi.moduleDataToImage(md)
+		if rtdie, ok := so.runtimeTypeToDIE[uint64(_type.Addr-md.types)]; ok {
+			typ, err := godwarf.ReadType(so.dwarf, so.index, rtdie.offset, so.typeCache)
 			if err != nil {
 				return nil, 0, fmt.Errorf("invalid interface type: %v", err)
 			}
@@ -630,7 +132,7 @@ func runtimeTypeToDIE(_type *Variable, dataAddr uintptr) (typ godwarf.Type, kind
 
 	// go1.7 to go1.10 implementation: convert runtime._type structs to type names
 
-	typename, kind, err := nameOfRuntimeType(_type)
+	typename, kind, err := nameOfRuntimeType(mds, _type)
 	if err != nil {
 		return nil, 0, fmt.Errorf("invalid interface type: %v", err)
 	}
@@ -651,7 +153,7 @@ type nameOfRuntimeTypeEntry struct {
 // Returns the type name of the type described in _type.
 // _type is a non-loaded Variable pointing to runtime._type struct in the target.
 // The returned string is in the format that's used in DWARF data
-func nameOfRuntimeType(_type *Variable) (typename string, kind int64, err error) {
+func nameOfRuntimeType(mds []moduleData, _type *Variable) (typename string, kind int64, err error) {
 	if e, ok := _type.bi.nameOfRuntimeType[_type.Addr]; ok {
 		return e.typename, e.kind, nil
 	}
@@ -668,11 +170,17 @@ func nameOfRuntimeType(_type *Variable) (typename string, kind int64, err error)
 	// Named types are defined by a 'type' expression, everything else
 	// (for example pointers to named types) are not considered named.
 	if tflag&tflagNamed != 0 {
-		typename, err = nameOfNamedRuntimeType(_type, kind, tflag)
+		typename, err = nameOfNamedRuntimeType(mds, _type, kind, tflag)
+		if err == nil {
+			_type.bi.nameOfRuntimeType[_type.Addr] = nameOfRuntimeTypeEntry{typename: typename, kind: kind}
+		}
 		return typename, kind, err
 	}
 
-	typename, err = nameOfUnnamedRuntimeType(_type, kind, tflag)
+	typename, err = nameOfUnnamedRuntimeType(mds, _type, kind, tflag)
+	if err == nil {
+		_type.bi.nameOfRuntimeType[_type.Addr] = nameOfRuntimeTypeEntry{typename: typename, kind: kind}
+	}
 	return typename, kind, err
 }
 
@@ -692,7 +200,7 @@ func nameOfRuntimeType(_type *Variable) (typename string, kind int64, err error)
 // to a struct specific to the type's kind (for example, if the type
 // being described is a slice type the variable will be specialized
 // to a runtime.slicetype).
-func nameOfNamedRuntimeType(_type *Variable, kind, tflag int64) (typename string, err error) {
+func nameOfNamedRuntimeType(mds []moduleData, _type *Variable, kind, tflag int64) (typename string, err error) {
 	var strOff int64
 	if strField := _type.loadFieldNamed("str"); strField != nil && strField.Value != nil {
 		strOff, _ = constant.Int64Val(strField.Value)
@@ -704,7 +212,7 @@ func nameOfNamedRuntimeType(_type *Variable, kind, tflag int64) (typename string
 	// For a description of how memory is organized for type names read
 	// the comment to 'type name struct' in $GOROOT/src/reflect/type.go
 
-	typename, _, _, err = resolveNameOff(_type.bi, _type.Addr, uintptr(strOff), _type.mem)
+	typename, _, _, err = resolveNameOff(_type.bi, mds, _type.Addr, uintptr(strOff), _type.mem)
 	if err != nil {
 		return "", err
 	}
@@ -730,7 +238,7 @@ func nameOfNamedRuntimeType(_type *Variable, kind, tflag int64) (typename string
 	if ut := uncommon(_type, tflag); ut != nil {
 		if pkgPathField := ut.loadFieldNamed("pkgpath"); pkgPathField != nil && pkgPathField.Value != nil {
 			pkgPathOff, _ := constant.Int64Val(pkgPathField.Value)
-			pkgPath, _, _, err := resolveNameOff(_type.bi, _type.Addr, uintptr(pkgPathOff), _type.mem)
+			pkgPath, _, _, err := resolveNameOff(_type.bi, mds, _type.Addr, uintptr(pkgPathOff), _type.mem)
 			if err != nil {
 				return "", err
 			}
@@ -747,7 +255,7 @@ func nameOfNamedRuntimeType(_type *Variable, kind, tflag int64) (typename string
 	return typename, nil
 }
 
-func nameOfUnnamedRuntimeType(_type *Variable, kind, tflag int64) (string, error) {
+func nameOfUnnamedRuntimeType(mds []moduleData, _type *Variable, kind, tflag int64) (string, error) {
 	_type, err := specificRuntimeType(_type, kind)
 	if err != nil {
 		return "", err
@@ -760,47 +268,47 @@ func nameOfUnnamedRuntimeType(_type *Variable, kind, tflag int64) (string, error
 		if lenField := _type.loadFieldNamed("len"); lenField != nil && lenField.Value != nil {
 			len, _ = constant.Int64Val(lenField.Value)
 		}
-		elemname, err := fieldToType(_type, "elem")
+		elemname, err := fieldToType(mds, _type, "elem")
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("[%d]%s", len, elemname), nil
 	case reflect.Chan:
-		elemname, err := fieldToType(_type, "elem")
+		elemname, err := fieldToType(mds, _type, "elem")
 		if err != nil {
 			return "", err
 		}
 		return "chan " + elemname, nil
 	case reflect.Func:
-		return nameOfFuncRuntimeType(_type, tflag, true)
+		return nameOfFuncRuntimeType(mds, _type, tflag, true)
 	case reflect.Interface:
-		return nameOfInterfaceRuntimeType(_type, kind, tflag)
+		return nameOfInterfaceRuntimeType(mds, _type, kind, tflag)
 	case reflect.Map:
-		keyname, err := fieldToType(_type, "key")
+		keyname, err := fieldToType(mds, _type, "key")
 		if err != nil {
 			return "", err
 		}
-		elemname, err := fieldToType(_type, "elem")
+		elemname, err := fieldToType(mds, _type, "elem")
 		if err != nil {
 			return "", err
 		}
 		return "map[" + keyname + "]" + elemname, nil
 	case reflect.Ptr:
-		elemname, err := fieldToType(_type, "elem")
+		elemname, err := fieldToType(mds, _type, "elem")
 		if err != nil {
 			return "", err
 		}
 		return "*" + elemname, nil
 	case reflect.Slice:
-		elemname, err := fieldToType(_type, "elem")
+		elemname, err := fieldToType(mds, _type, "elem")
 		if err != nil {
 			return "", err
 		}
 		return "[]" + elemname, nil
 	case reflect.Struct:
-		return nameOfStructRuntimeType(_type, kind, tflag)
+		return nameOfStructRuntimeType(mds, _type, kind, tflag)
 	default:
-		return nameOfNamedRuntimeType(_type, kind, tflag)
+		return nameOfNamedRuntimeType(mds, _type, kind, tflag)
 	}
 }
 
@@ -808,7 +316,7 @@ func nameOfUnnamedRuntimeType(_type *Variable, kind, tflag int64) (string, error
 // A runtime.functype is followed by a runtime.uncommontype
 // (optional) and then by an array of pointers to runtime._type,
 // one for each input and output argument.
-func nameOfFuncRuntimeType(_type *Variable, tflag int64, anonymous bool) (string, error) {
+func nameOfFuncRuntimeType(mds []moduleData, _type *Variable, tflag int64, anonymous bool) (string, error) {
 	rtyp, err := _type.bi.findType("runtime._type")
 	if err != nil {
 		return "", err
@@ -841,7 +349,7 @@ func nameOfFuncRuntimeType(_type *Variable, tflag int64, anonymous bool) (string
 	for i := int64(0); i < inCount; i++ {
 		argtype := cursortyp.maybeDereference()
 		cursortyp.Addr += uintptr(_type.bi.Arch.PtrSize())
-		argtypename, _, err := nameOfRuntimeType(argtype)
+		argtypename, _, err := nameOfRuntimeType(mds, argtype)
 		if err != nil {
 			return "", err
 		}
@@ -858,7 +366,7 @@ func nameOfFuncRuntimeType(_type *Variable, tflag int64, anonymous bool) (string
 	case 1:
 		buf.WriteString(" ")
 		argtype := cursortyp.maybeDereference()
-		argtypename, _, err := nameOfRuntimeType(argtype)
+		argtypename, _, err := nameOfRuntimeType(mds, argtype)
 		if err != nil {
 			return "", err
 		}
@@ -868,7 +376,7 @@ func nameOfFuncRuntimeType(_type *Variable, tflag int64, anonymous bool) (string
 		for i := int64(0); i < outCount; i++ {
 			argtype := cursortyp.maybeDereference()
 			cursortyp.Addr += uintptr(_type.bi.Arch.PtrSize())
-			argtypename, _, err := nameOfRuntimeType(argtype)
+			argtypename, _, err := nameOfRuntimeType(mds, argtype)
 			if err != nil {
 				return "", err
 			}
@@ -882,7 +390,7 @@ func nameOfFuncRuntimeType(_type *Variable, tflag int64, anonymous bool) (string
 	return buf.String(), nil
 }
 
-func nameOfInterfaceRuntimeType(_type *Variable, kind, tflag int64) (string, error) {
+func nameOfInterfaceRuntimeType(mds []moduleData, _type *Variable, kind, tflag int64) (string, error) {
 	var buf bytes.Buffer
 	buf.WriteString("interface {")
 
@@ -905,14 +413,14 @@ func nameOfInterfaceRuntimeType(_type *Variable, kind, tflag int64) (string, err
 			case imethodFieldName:
 				nameoff, _ := constant.Int64Val(im.Children[i].Value)
 				var err error
-				methodname, _, _, err = resolveNameOff(_type.bi, _type.Addr, uintptr(nameoff), _type.mem)
+				methodname, _, _, err = resolveNameOff(_type.bi, mds, _type.Addr, uintptr(nameoff), _type.mem)
 				if err != nil {
 					return "", err
 				}
 
 			case imethodFieldItyp:
 				typeoff, _ := constant.Int64Val(im.Children[i].Value)
-				typ, err := resolveTypeOff(_type.bi, _type.Addr, uintptr(typeoff), _type.mem)
+				typ, err := resolveTypeOff(_type.bi, mds, _type.Addr, uintptr(typeoff), _type.mem)
 				if err != nil {
 					return "", err
 				}
@@ -924,7 +432,7 @@ func nameOfInterfaceRuntimeType(_type *Variable, kind, tflag int64) (string, err
 				if tflagField := typ.loadFieldNamed("tflag"); tflagField != nil && tflagField.Value != nil {
 					tflag, _ = constant.Int64Val(tflagField.Value)
 				}
-				methodtype, err = nameOfFuncRuntimeType(typ, tflag, false)
+				methodtype, err = nameOfFuncRuntimeType(mds, typ, tflag, false)
 				if err != nil {
 					return "", err
 				}
@@ -943,7 +451,7 @@ func nameOfInterfaceRuntimeType(_type *Variable, kind, tflag int64) (string, err
 	return buf.String(), nil
 }
 
-func nameOfStructRuntimeType(_type *Variable, kind, tflag int64) (string, error) {
+func nameOfStructRuntimeType(mds []moduleData, _type *Variable, kind, tflag int64) (string, error) {
 	var buf bytes.Buffer
 	buf.WriteString("struct {")
 
@@ -983,7 +491,7 @@ func nameOfStructRuntimeType(_type *Variable, kind, tflag int64) (string, error)
 			case "typ":
 				typeField = field.Children[i].maybeDereference()
 				var err error
-				fieldtypename, _, err = nameOfRuntimeType(typeField)
+				fieldtypename, _, err = nameOfRuntimeType(mds, typeField)
 				if err != nil {
 					return "", err
 				}
@@ -1017,13 +525,13 @@ func nameOfStructRuntimeType(_type *Variable, kind, tflag int64) (string, error)
 	return buf.String(), nil
 }
 
-func fieldToType(_type *Variable, fieldName string) (string, error) {
+func fieldToType(mds []moduleData, _type *Variable, fieldName string) (string, error) {
 	typeField, err := _type.structMember(fieldName)
 	if err != nil {
 		return "", err
 	}
 	typeField = typeField.maybeDereference()
-	typename, _, err := nameOfRuntimeType(typeField)
+	typename, _, err := nameOfRuntimeType(mds, typeField)
 	return typename, err
 }
 
@@ -1262,7 +770,8 @@ func constructTypeForKind(kind int64, bi *BinaryInfo) (*godwarf.StructType, erro
 }
 
 func dwarfToRuntimeType(bi *BinaryInfo, mem MemoryReadWriter, typ godwarf.Type) (typeAddr uint64, typeKind uint64, found bool, err error) {
-	rdr := bi.DwarfReader()
+	so := bi.typeToImage(typ)
+	rdr := so.DwarfReader()
 	rdr.Seek(typ.Common().Offset)
 	e, err := rdr.Next()
 	if err != nil {
@@ -1273,13 +782,21 @@ func dwarfToRuntimeType(bi *BinaryInfo, mem MemoryReadWriter, typ godwarf.Type) 
 		return 0, 0, false, nil
 	}
 
-	if err := loadModuleData(bi, mem); err != nil {
+	mds, err := loadModuleData(bi, mem)
+	if err != nil {
 		return 0, 0, false, err
 	}
 
-	//TODO(aarzilli): when we support plugins this should be the plugin
-	//corresponding to the shared object containing entry 'e'.
-	typeAddr = uint64(bi.moduleData[0].types) + off
+	md := bi.imageToModuleData(so, mds)
+	if md == nil {
+		if so.index > 0 {
+			return 0, 0, false, fmt.Errorf("could not find module data for type %s (shared object: %q)", typ, so.Path)
+		} else {
+			return 0, 0, false, fmt.Errorf("could not find module data for type %s", typ)
+		}
+	}
+
+	typeAddr = uint64(md.types) + off
 
 	rtyp, err := bi.findType("runtime._type")
 	if err != nil {

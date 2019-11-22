@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/rpc"
 	"net/rpc/jsonrpc"
@@ -68,17 +67,13 @@ type methodType struct {
 
 // NewServer creates a new RPCServer.
 func NewServer(config *service.Config) *ServerImpl {
-	logger := logrus.New().WithFields(logrus.Fields{"layer": "rpc"})
-	logger.Logger.Level = logrus.DebugLevel
-	if !logflags.RPC() {
-		logger.Logger.Out = ioutil.Discard
-	}
+	logger := logflags.RPCLogger()
 	if config.APIVersion < 2 {
 		logger.Info("Using API v1")
 	}
 	if config.Foreground {
 		// Print listener address
-		fmt.Printf("API server listening at: %s\n", config.Listener.Addr())
+		logflags.WriteAPIListeningMessage(config.Listener.Addr().String())
 	}
 	return &ServerImpl{
 		config:   config,
@@ -127,6 +122,7 @@ func (s *ServerImpl) Run() error {
 		Backend:              s.config.Backend,
 		Foreground:           s.config.Foreground,
 		DebugInfoDirectories: s.config.DebugInfoDirectories,
+		CheckGoVersion:       s.config.CheckGoVersion,
 	},
 		s.config.ProcessArgs); err != nil {
 		return err
@@ -282,6 +278,7 @@ func (s *ServerImpl) serveJSONCodec(conn io.ReadWriteCloser) {
 		mtype, ok := s.methodMaps[s.config.APIVersion-1][req.ServiceMethod]
 		if !ok {
 			s.log.Errorf("rpc: can't find method %s", req.ServiceMethod)
+			s.sendResponse(sending, &req, &rpc.Response{}, nil, codec, fmt.Sprintf("unknown method: %s", req.ServiceMethod))
 			continue
 		}
 
@@ -390,7 +387,7 @@ func (cb *RPCCallback) Return(out interface{}, err error) {
 func (s *RPCServer) GetVersion(args api.GetVersionIn, out *api.GetVersionOut) error {
 	out.DelveVersion = version.DelveVersion.String()
 	out.APIVersion = s.s.config.APIVersion
-	return nil
+	return s.s.debugger.GetVersion(out)
 }
 
 // Changes version of the API being served.

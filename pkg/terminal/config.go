@@ -20,7 +20,15 @@ func configureCmd(t *Term, ctx callContext, args string) error {
 	case "":
 		return fmt.Errorf("wrong number of arguments to \"config\"")
 	default:
-		return configureSet(t, args)
+		err := configureSet(t, args)
+		if err != nil {
+			return err
+		}
+		if t.client != nil { // only happens in tests
+			lcfg := t.loadConfig()
+			t.client.SetReturnValuesLoadConfig(&lcfg)
+		}
+		return nil
 	}
 }
 
@@ -114,6 +122,9 @@ func configureSet(t *Term, args string) error {
 			n, err := strconv.Atoi(rest)
 			if err != nil {
 				return reflect.ValueOf(nil), fmt.Errorf("argument to %q must be a number", cfgname)
+			}
+			if n < 0 {
+				return reflect.ValueOf(nil), fmt.Errorf("argument to %q must be a number greater than zero", cfgname)
 			}
 			return reflect.ValueOf(&n), nil
 		case reflect.Bool:

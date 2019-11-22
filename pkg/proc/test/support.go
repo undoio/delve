@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ type Fixture struct {
 	Path string
 	// Source is the absolute path of the test binary source.
 	Source string
+	// BuildDir is the directory where the build command was run.
+	BuildDir string
 }
 
 // FixtureKey holds the name and builds flags used for a test fixture.
@@ -72,6 +75,8 @@ const (
 	// EnableDWZCompression will enable DWZ compression of DWARF sections.
 	EnableDWZCompression
 	BuildModePIE
+	BuildModePlugin
+	AllNonOptimized
 )
 
 // BuildFixture will compile the fixture 'name' using the provided build flags.
@@ -103,7 +108,8 @@ func BuildFixture(name string, flags BuildFlags) Fixture {
 	tmpfile := filepath.Join(os.TempDir(), fmt.Sprintf("%s.%s", name, hex.EncodeToString(r)))
 
 	buildFlags := []string{"build"}
-	if ver, _ := goversion.Parse(runtime.Version()); runtime.GOOS == "windows" && ver.Major > 0 && !ver.AfterOrEqual(goversion.GoVersion{1, 9, -1, 0, 0, ""}) {
+	var ver goversion.GoVersion
+	if ver, _ = goversion.Parse(runtime.Version()); runtime.GOOS == "windows" && ver.Major > 0 && !ver.AfterOrEqual(goversion.GoVersion{1, 9, -1, 0, 0, ""}) {
 		// Work-around for https://github.com/golang/go/issues/13154
 		buildFlags = append(buildFlags, "-ldflags=-linkmode internal")
 	}
@@ -117,13 +123,26 @@ func BuildFixture(name string, flags BuildFlags) Fixture {
 	if flags&EnableOptimization == 0 {
 		gcflagsv = append(gcflagsv, "-N")
 	}
-	gcflags := "-gcflags=" + strings.Join(gcflagsv, " ")
+	var gcflags string
+	if flags&AllNonOptimized != 0 {
+		gcflags = "-gcflags=all=" + strings.Join(gcflagsv, " ")
+	} else {
+		gcflags = "-gcflags=" + strings.Join(gcflagsv, " ")
+	}
 	buildFlags = append(buildFlags, gcflags, "-o", tmpfile)
 	if *EnableRace {
 		buildFlags = append(buildFlags, "-race")
 	}
 	if flags&BuildModePIE != 0 {
 		buildFlags = append(buildFlags, "-buildmode=pie")
+	}
+	if flags&BuildModePlugin != 0 {
+		buildFlags = append(buildFlags, "-buildmode=plugin")
+	}
+	if ver.IsDevel() || ver.AfterOrEqual(goversion.GoVersion{1, 11, -1, 0, 0, ""}) {
+		if flags&EnableDWZCompression != 0 {
+			buildFlags = append(buildFlags, "-ldflags=-compressdwarf=false")
+		}
 	}
 	if path != "" {
 		buildFlags = append(buildFlags, name+".go")
@@ -142,9 +161,11 @@ func BuildFixture(name string, flags BuildFlags) Fixture {
 	if flags&EnableDWZCompression != 0 {
 		cmd := exec.Command("dwz", tmpfile)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			fmt.Printf("Error running dwz on %s: %s\n", tmpfile, err)
-			fmt.Printf("%s\n", string(out))
-			os.Exit(1)
+			if regexp.MustCompile(`dwz: Section offsets in (.*?) not monotonically increasing`).FindString(string(out)) == "" {
+				fmt.Printf("Error running dwz on %s: %s\n", tmpfile, err)
+				fmt.Printf("%s\n", string(out))
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -155,7 +176,9 @@ func BuildFixture(name string, flags BuildFlags) Fixture {
 		source = strings.Replace(sympath, "\\", "/", -1)
 	}
 
-	fixture := Fixture{Name: name, Path: tmpfile, Source: source}
+	absdir, _ := filepath.Abs(dir)
+
+	fixture := Fixture{Name: name, Path: tmpfile, Source: source, BuildDir: absdir}
 
 	Fixtures[fk] = fixture
 	return Fixtures[fk]
@@ -305,4 +328,23 @@ func DefaultTestBackend(testBackend *string) {
 	} else {
 		*testBackend = "native"
 	}
+}
+
+// WithPlugins builds the fixtures in plugins as plugins and returns them.
+// The test calling WithPlugins will be skipped if the current combination
+// of OS, architecture and version of GO doesn't support plugins or
+// debugging plugins.
+func WithPlugins(t *testing.T, flags BuildFlags, plugins ...string) []Fixture {
+	if !goversion.VersionAfterOrEqual(runtime.Version(), 1, 12) {
+		t.Skip("versions of Go before 1.12 do not include debug information in packages that import plugin (or they do but it's wrong)")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("only supported on linux")
+	}
+
+	r := make([]Fixture, len(plugins))
+	for i := range plugins {
+		r[i] = BuildFixture(plugins[i], flags|BuildModePlugin)
+	}
+	return r
 }

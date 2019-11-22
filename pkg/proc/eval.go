@@ -2,6 +2,7 @@ package proc
 
 import (
 	"bytes"
+	"debug/dwarf"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -9,22 +10,65 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/printer"
+	"go/scanner"
 	"go/token"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/op"
 	"github.com/undoio/delve/pkg/dwarf/reader"
 	"github.com/undoio/delve/pkg/goversion"
 )
 
 var errOperationOnSpecialFloat = errors.New("operations on non-finite floats not implemented")
 
+// EvalScope is the scope for variable evaluation. Contains the thread,
+// current location (PC), and canonical frame address.
+type EvalScope struct {
+	Location
+	Regs    op.DwarfRegisters
+	Mem     MemoryReadWriter // Target's memory
+	g       *G
+	BinInfo *BinaryInfo
+
+	frameOffset int64
+
+	aordr *dwarf.Reader // extra reader to load DW_AT_abstract_origin entries, do not initialize
+
+	// When the following pointer is not nil this EvalScope was created
+	// by CallFunction and the expression evaluation is executing on a
+	// different goroutine from the debugger's main goroutine.
+	// Under this circumstance the expression evaluator can make function
+	// calls by setting up the runtime.debugCallV1 call and then writing a
+	// value to the continueRequest channel.
+	// When a value is written to continueRequest the debugger's main goroutine
+	// will call Continue, when the runtime in the target process sends us a
+	// request in the function call protocol the debugger's main goroutine will
+	// write a value to the continueCompleted channel.
+	// The goroutine executing the expression evaluation shall signal that the
+	// evaluation is complete by closing the continueRequest channel.
+	callCtx *callContext
+}
+
 // EvalExpression returns the value of the given expression.
 func (scope *EvalScope) EvalExpression(expr string, cfg LoadConfig) (*Variable, error) {
+	if scope.callCtx != nil {
+		// makes sure that the other goroutine won't wait forever if we make a mistake
+		defer close(scope.callCtx.continueRequest)
+	}
 	t, err := parser.ParseExpr(expr)
+	if eqOff, isAs := isAssignment(err); scope.callCtx != nil && isAs {
+		lexpr := expr[:eqOff]
+		rexpr := expr[eqOff+1:]
+		err := scope.SetVariable(lexpr, rexpr)
+		scope.callCtx.doReturn(nil, err)
+		return nil, err
+	}
 	if err != nil {
+		scope.callCtx.doReturn(nil, err)
 		return nil, err
 	}
 
@@ -33,13 +77,380 @@ func (scope *EvalScope) EvalExpression(expr string, cfg LoadConfig) (*Variable, 
 		ev, err = scope.evalAST(t)
 	}
 	if err != nil {
+		scope.callCtx.doReturn(nil, err)
 		return nil, err
 	}
 	ev.loadValue(cfg)
 	if ev.Name == "" {
 		ev.Name = expr
 	}
+	scope.callCtx.doReturn(ev, nil)
 	return ev, nil
+}
+
+func isAssignment(err error) (int, bool) {
+	el, isScannerErr := err.(scanner.ErrorList)
+	if isScannerErr && el[0].Msg == "expected '==', found '='" {
+		return el[0].Pos.Offset, true
+	}
+	return 0, false
+}
+
+// Locals fetches all variables of a specific type in the current function scope.
+func (scope *EvalScope) Locals() ([]*Variable, error) {
+	if scope.Fn == nil {
+		return nil, errors.New("unable to find function context")
+	}
+
+	trustArgOrder := scope.BinInfo.Producer() != "" && goversion.ProducerAfterOrEqual(scope.BinInfo.Producer(), 1, 12)
+
+	var vars []*Variable
+	var depths []int
+	varReader := reader.Variables(scope.image().dwarf, scope.Fn.offset, reader.ToRelAddr(scope.PC, scope.image().StaticBase), scope.Line, true, false)
+	for varReader.Next() {
+		entry := varReader.Entry()
+		val, err := extractVarInfoFromEntry(scope.BinInfo, scope.image(), scope.Regs, scope.Mem, entry)
+		if err != nil {
+			// skip variables that we can't parse yet
+			continue
+		}
+		if trustArgOrder && val.Unreadable != nil && val.Addr == 0 && entry.Tag == dwarf.TagFormalParameter {
+			addr := afterLastArgAddr(vars)
+			if addr == 0 {
+				addr = uintptr(scope.Regs.CFA)
+			}
+			addr = uintptr(alignAddr(int64(addr), val.DwarfType.Align()))
+			val = newVariable(val.Name, addr, val.DwarfType, scope.BinInfo, scope.Mem)
+		}
+		vars = append(vars, val)
+		depth := varReader.Depth()
+		if entry.Tag == dwarf.TagFormalParameter {
+			if depth <= 1 {
+				depth = 0
+			}
+			isret, _ := entry.Val(dwarf.AttrVarParam).(bool)
+			if isret {
+				val.Flags |= VariableReturnArgument
+			} else {
+				val.Flags |= VariableArgument
+			}
+		}
+		depths = append(depths, depth)
+	}
+
+	if err := varReader.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(vars) <= 0 {
+		return vars, nil
+	}
+
+	sort.Stable(&variablesByDepthAndDeclLine{vars, depths})
+
+	lvn := map[string]*Variable{} // lvn[n] is the last variable we saw named n
+
+	for i, v := range vars {
+		if name := v.Name; len(name) > 1 && name[0] == '&' {
+			locationExpr := v.LocationExpr
+			declLine := v.DeclLine
+			v = v.maybeDereference()
+			if v.Addr == 0 {
+				v.Unreadable = fmt.Errorf("no address for escaped variable")
+			}
+			v.Name = name[1:]
+			v.Flags |= VariableEscaped
+			v.LocationExpr = locationExpr + " (escaped)"
+			v.DeclLine = declLine
+			vars[i] = v
+		}
+		if otherv := lvn[v.Name]; otherv != nil {
+			otherv.Flags |= VariableShadowed
+		}
+		lvn[v.Name] = v
+	}
+
+	return vars, nil
+}
+
+func afterLastArgAddr(vars []*Variable) uintptr {
+	for i := len(vars) - 1; i >= 0; i-- {
+		v := vars[i]
+		if (v.Flags&VariableArgument != 0) || (v.Flags&VariableReturnArgument != 0) {
+			return v.Addr + uintptr(v.DwarfType.Size())
+		}
+	}
+	return 0
+}
+
+// setValue writes the value of srcv to dstv.
+// * If srcv is a numerical literal constant and srcv is of a compatible type
+//   the necessary type conversion is performed.
+// * If srcv is nil and dstv is of a nil'able type then dstv is nilled.
+// * If srcv is the empty string and dstv is a string then dstv is set to the
+//   empty string.
+// * If dstv is an "interface {}" and srcv is either an interface (possibly
+//   non-empty) or a pointer shaped type (map, channel, pointer or struct
+//   containing a single pointer field) the type conversion to "interface {}"
+//   is performed.
+// * If srcv and dstv have the same type and are both addressable then the
+//   contents of srcv are copied byte-by-byte into dstv
+func (scope *EvalScope) setValue(dstv, srcv *Variable, srcExpr string) error {
+	srcv.loadValue(loadSingleValue)
+
+	typerr := srcv.isType(dstv.RealType, dstv.Kind)
+	if _, isTypeConvErr := typerr.(*typeConvErr); isTypeConvErr {
+		// attempt iface -> eface and ptr-shaped -> eface conversions.
+		return convertToEface(srcv, dstv)
+	}
+	if typerr != nil {
+		return typerr
+	}
+
+	if srcv.Unreadable != nil {
+		return fmt.Errorf("Expression \"%s\" is unreadable: %v", srcExpr, srcv.Unreadable)
+	}
+
+	// Numerical types
+	switch dstv.Kind {
+	case reflect.Float32, reflect.Float64:
+		f, _ := constant.Float64Val(srcv.Value)
+		return dstv.writeFloatRaw(f, dstv.RealType.Size())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, _ := constant.Int64Val(srcv.Value)
+		return dstv.writeUint(uint64(n), dstv.RealType.Size())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, _ := constant.Uint64Val(srcv.Value)
+		return dstv.writeUint(n, dstv.RealType.Size())
+	case reflect.Bool:
+		return dstv.writeBool(constant.BoolVal(srcv.Value))
+	case reflect.Complex64, reflect.Complex128:
+		real, _ := constant.Float64Val(constant.Real(srcv.Value))
+		imag, _ := constant.Float64Val(constant.Imag(srcv.Value))
+		return dstv.writeComplex(real, imag, dstv.RealType.Size())
+	}
+
+	// nilling nillable variables
+	if srcv == nilVariable {
+		return dstv.writeZero()
+	}
+
+	if srcv.Kind == reflect.String {
+		if err := allocString(scope, srcv); err != nil {
+			return err
+		}
+		return dstv.writeString(uint64(srcv.Len), uint64(srcv.Base))
+	}
+
+	// slice assignment (this is not handled by the writeCopy below so that
+	// results of a reslice operation can be used here).
+	if srcv.Kind == reflect.Slice {
+		return dstv.writeSlice(srcv.Len, srcv.Cap, srcv.Base)
+	}
+
+	// allow any integer to be converted to any pointer
+	if t, isptr := dstv.RealType.(*godwarf.PtrType); isptr {
+		return dstv.writeUint(uint64(srcv.Children[0].Addr), int64(t.ByteSize))
+	}
+
+	// byte-by-byte copying for everything else, but the source must be addressable
+	if srcv.Addr != 0 {
+		return dstv.writeCopy(srcv)
+	}
+
+	return fmt.Errorf("can not set variables of type %s (not implemented)", dstv.Kind.String())
+}
+
+// EvalVariable returns the value of the given expression (backwards compatibility).
+func (scope *EvalScope) EvalVariable(name string, cfg LoadConfig) (*Variable, error) {
+	return scope.EvalExpression(name, cfg)
+}
+
+// SetVariable sets the value of the named variable
+func (scope *EvalScope) SetVariable(name, value string) error {
+	t, err := parser.ParseExpr(name)
+	if err != nil {
+		return err
+	}
+
+	xv, err := scope.evalAST(t)
+	if err != nil {
+		return err
+	}
+
+	if xv.Addr == 0 {
+		return fmt.Errorf("Can not assign to \"%s\"", name)
+	}
+
+	if xv.Unreadable != nil {
+		return fmt.Errorf("Expression \"%s\" is unreadable: %v", name, xv.Unreadable)
+	}
+
+	t, err = parser.ParseExpr(value)
+	if err != nil {
+		return err
+	}
+
+	yv, err := scope.evalAST(t)
+	if err != nil {
+		return err
+	}
+
+	return scope.setValue(xv, yv, value)
+}
+
+// LocalVariables returns all local variables from the current function scope.
+func (scope *EvalScope) LocalVariables(cfg LoadConfig) ([]*Variable, error) {
+	vars, err := scope.Locals()
+	if err != nil {
+		return nil, err
+	}
+	vars = filterVariables(vars, func(v *Variable) bool {
+		return (v.Flags & (VariableArgument | VariableReturnArgument)) == 0
+	})
+	cfg.MaxMapBuckets = maxMapBucketsFactor * cfg.MaxArrayValues
+	loadValues(vars, cfg)
+	return vars, nil
+}
+
+// FunctionArguments returns the name, value, and type of all current function arguments.
+func (scope *EvalScope) FunctionArguments(cfg LoadConfig) ([]*Variable, error) {
+	vars, err := scope.Locals()
+	if err != nil {
+		return nil, err
+	}
+	vars = filterVariables(vars, func(v *Variable) bool {
+		return (v.Flags & (VariableArgument | VariableReturnArgument)) != 0
+	})
+	cfg.MaxMapBuckets = maxMapBucketsFactor * cfg.MaxArrayValues
+	loadValues(vars, cfg)
+	return vars, nil
+}
+
+func filterVariables(vars []*Variable, pred func(v *Variable) bool) []*Variable {
+	r := make([]*Variable, 0, len(vars))
+	for i := range vars {
+		if pred(vars[i]) {
+			r = append(r, vars[i])
+		}
+	}
+	return r
+}
+
+func regsReplaceStaticBase(regs op.DwarfRegisters, image *Image) op.DwarfRegisters {
+	regs.StaticBase = image.StaticBase
+	return regs
+}
+
+// PackageVariables returns the name, value, and type of all package variables in the application.
+func (scope *EvalScope) PackageVariables(cfg LoadConfig) ([]*Variable, error) {
+	var vars []*Variable
+	for _, image := range scope.BinInfo.Images {
+		if image.loadErr != nil {
+			continue
+		}
+		reader := reader.New(image.dwarf)
+
+		var utypoff dwarf.Offset
+		utypentry, err := reader.SeekToTypeNamed("<unspecified>")
+		if err == nil {
+			utypoff = utypentry.Offset
+		}
+
+		for entry, err := reader.NextPackageVariable(); entry != nil; entry, err = reader.NextPackageVariable() {
+			if err != nil {
+				return nil, err
+			}
+
+			if typoff, ok := entry.Val(dwarf.AttrType).(dwarf.Offset); !ok || typoff == utypoff {
+				continue
+			}
+
+			// Ignore errors trying to extract values
+			val, err := extractVarInfoFromEntry(scope.BinInfo, image, regsReplaceStaticBase(scope.Regs, image), scope.Mem, entry)
+			if err != nil {
+				continue
+			}
+			val.loadValue(cfg)
+			vars = append(vars, val)
+		}
+	}
+
+	return vars, nil
+}
+
+func (scope *EvalScope) findGlobal(name string) (*Variable, error) {
+	for _, pkgvar := range scope.BinInfo.packageVars {
+		if pkgvar.name == name || strings.HasSuffix(pkgvar.name, "/"+name) {
+			reader := pkgvar.cu.image.dwarfReader
+			reader.Seek(pkgvar.offset)
+			entry, err := reader.Next()
+			if err != nil {
+				return nil, err
+			}
+			return extractVarInfoFromEntry(scope.BinInfo, pkgvar.cu.image, regsReplaceStaticBase(scope.Regs, pkgvar.cu.image), scope.Mem, entry)
+		}
+	}
+	for _, fn := range scope.BinInfo.Functions {
+		if fn.Name == name || strings.HasSuffix(fn.Name, "/"+name) {
+			//TODO(aarzilli): convert function entry into a function type?
+			r := newVariable(fn.Name, uintptr(fn.Entry), &godwarf.FuncType{}, scope.BinInfo, scope.Mem)
+			r.Value = constant.MakeString(fn.Name)
+			r.Base = uintptr(fn.Entry)
+			r.loaded = true
+			if fn.Entry == 0 {
+				r.Unreadable = fmt.Errorf("function %s is inlined", fn.Name)
+			}
+			return r, nil
+		}
+	}
+	for dwref, ctyp := range scope.BinInfo.consts {
+		for _, cval := range ctyp.values {
+			if cval.fullName == name || strings.HasSuffix(cval.fullName, "/"+name) {
+				t, err := scope.BinInfo.Images[dwref.imageIndex].Type(dwref.offset)
+				if err != nil {
+					return nil, err
+				}
+				v := newVariable(name, 0x0, t, scope.BinInfo, scope.Mem)
+				switch v.Kind {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+					v.Value = constant.MakeInt64(cval.value)
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+					v.Value = constant.MakeUint64(uint64(cval.value))
+				default:
+					return nil, fmt.Errorf("unsupported constant kind %v", v.Kind)
+				}
+				v.Flags |= VariableConstant
+				v.loaded = true
+				return v, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("could not find symbol value for %s", name)
+}
+
+// image returns the image containing the current function.
+func (scope *EvalScope) image() *Image {
+	return scope.BinInfo.funcToImage(scope.Fn)
+}
+
+// globalFor returns a global scope for 'image' with the register values of 'scope'.
+func (scope *EvalScope) globalFor(image *Image) *EvalScope {
+	r := *scope
+	r.Regs.StaticBase = image.StaticBase
+	r.Fn = &Function{cu: &compileUnit{image: image}}
+	return &r
+}
+
+// DwarfReader returns the DwarfReader containing the
+// Dwarf information for the target process.
+func (scope *EvalScope) DwarfReader() *reader.Reader {
+	return scope.image().DwarfReader()
+}
+
+// PtrSize returns the size of a pointer.
+func (scope *EvalScope) PtrSize() int {
+	return scope.BinInfo.Arch.PtrSize()
 }
 
 // evalToplevelTypeCast implements certain type casts that we only support
@@ -89,7 +500,7 @@ func (scope *EvalScope) evalToplevelTypeCast(t ast.Expr, cfg LoadConfig) (*Varia
 			return nil, converr
 		}
 		for i, ch := range []byte(constant.StringVal(argv.Value)) {
-			e := scope.newVariable("", argv.Addr+uintptr(i), targetType.(*godwarf.SliceType).ElemType, argv.mem)
+			e := newVariable("", argv.Addr+uintptr(i), targetType.(*godwarf.SliceType).ElemType, scope.BinInfo, argv.mem)
 			e.loaded = true
 			e.Value = constant.MakeInt64(int64(ch))
 			v.Children = append(v.Children, *e)
@@ -103,7 +514,7 @@ func (scope *EvalScope) evalToplevelTypeCast(t ast.Expr, cfg LoadConfig) (*Varia
 			return nil, converr
 		}
 		for i, ch := range constant.StringVal(argv.Value) {
-			e := scope.newVariable("", argv.Addr+uintptr(i), targetType.(*godwarf.SliceType).ElemType, argv.mem)
+			e := newVariable("", argv.Addr+uintptr(i), targetType.(*godwarf.SliceType).ElemType, scope.BinInfo, argv.mem)
 			e.loaded = true
 			e.Value = constant.MakeInt64(int64(ch))
 			v.Children = append(v.Children, *e)
@@ -174,20 +585,11 @@ func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
 	case *ast.CallExpr:
 		if len(node.Args) == 1 {
 			v, err := scope.evalTypeCast(node)
-			if err == nil {
-				return v, nil
-			}
-			_, isident := node.Fun.(*ast.Ident)
-			// we don't support function calls at the moment except for a few
-			// builtin functions so just return the type error here if the function
-			// isn't an identifier.
-			// More sophisticated logic will be required when function calls
-			// are implemented.
-			if err != reader.TypeNotFoundErr || !isident {
+			if err == nil || err != reader.TypeNotFoundErr {
 				return v, err
 			}
 		}
-		return scope.evalBuiltinCall(node)
+		return evalFunctionCall(scope, node)
 
 	case *ast.Ident:
 		return scope.evalIdent(node)
@@ -200,10 +602,10 @@ func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
 		// try to interpret the selector as a package variable
 		if maybePkg, ok := node.X.(*ast.Ident); ok {
 			if maybePkg.Name == "runtime" && node.Sel.Name == "curg" {
-				if scope.Gvar == nil {
+				if scope.g == nil {
 					return nilVariable, nil
 				}
-				return scope.Gvar.clone(), nil
+				return scope.g.variable.clone(), nil
 			} else if maybePkg.Name == "runtime" && node.Sel.Name == "frameoff" {
 				return newConstant(constant.MakeInt64(scope.frameOffset), scope.Mem), nil
 			} else if v, err := scope.findGlobal(maybePkg.Name + "." + node.Sel.Name); err == nil {
@@ -317,7 +719,7 @@ func (scope *EvalScope) evalTypeCast(node *ast.CallExpr) (*Variable, error) {
 
 		n, _ := constant.Int64Val(argv.Value)
 
-		v.Children = []Variable{*(scope.newVariable("", uintptr(n), ttyp.Type, scope.Mem))}
+		v.Children = []Variable{*(newVariable("", uintptr(n), ttyp.Type, scope.BinInfo, scope.Mem))}
 		return v, nil
 
 	case *godwarf.UintType:
@@ -395,33 +797,37 @@ func convertInt(n uint64, signed bool, size int64) uint64 {
 func (scope *EvalScope) evalBuiltinCall(node *ast.CallExpr) (*Variable, error) {
 	fnnode, ok := node.Fun.(*ast.Ident)
 	if !ok {
-		return nil, fmt.Errorf("function calls are not supported")
+		return nil, nil
 	}
 
-	args := make([]*Variable, len(node.Args))
+	callBuiltinWithArgs := func(builtin func([]*Variable, []ast.Expr) (*Variable, error)) (*Variable, error) {
+		args := make([]*Variable, len(node.Args))
 
-	for i := range node.Args {
-		v, err := scope.evalAST(node.Args[i])
-		if err != nil {
-			return nil, err
+		for i := range node.Args {
+			v, err := scope.evalAST(node.Args[i])
+			if err != nil {
+				return nil, err
+			}
+			args[i] = v
 		}
-		args[i] = v
+
+		return builtin(args, node.Args)
 	}
 
 	switch fnnode.Name {
 	case "cap":
-		return capBuiltin(args, node.Args)
+		return callBuiltinWithArgs(capBuiltin)
 	case "len":
-		return lenBuiltin(args, node.Args)
+		return callBuiltinWithArgs(lenBuiltin)
 	case "complex":
-		return complexBuiltin(args, node.Args)
+		return callBuiltinWithArgs(complexBuiltin)
 	case "imag":
-		return imagBuiltin(args, node.Args)
+		return callBuiltinWithArgs(imagBuiltin)
 	case "real":
-		return realBuiltin(args, node.Args)
+		return callBuiltinWithArgs(realBuiltin)
 	}
 
-	return nil, fmt.Errorf("function calls are not supported")
+	return nil, nil
 }
 
 func capBuiltin(args []*Variable, nodeargs []ast.Expr) (*Variable, error) {
@@ -913,8 +1319,8 @@ func negotiateType(op token.Token, xv, yv *Variable) (godwarf.Type, error) {
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			// ok
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			if yv.DwarfType != nil || constant.Sign(yv.Value) < 0 {
-				return nil, fmt.Errorf("shift count type %s, must be unsigned integer", yv.Kind.String())
+			if constant.Sign(yv.Value) < 0 {
+				return nil, fmt.Errorf("shift count must not be negative")
 			}
 		default:
 			return nil, fmt.Errorf("shift count type %s, must be unsigned integer", yv.Kind.String())
@@ -969,7 +1375,9 @@ func (scope *EvalScope) evalBinary(node *ast.BinaryExpr) (*Variable, error) {
 	if err != nil {
 		return nil, err
 	}
-	xv.loadValue(loadFullValue)
+	if xv.Kind != reflect.String { // delay loading strings until we use them
+		xv.loadValue(loadFullValue)
+	}
 	if xv.Unreadable != nil {
 		return nil, xv.Unreadable
 	}
@@ -990,7 +1398,9 @@ func (scope *EvalScope) evalBinary(node *ast.BinaryExpr) (*Variable, error) {
 	if err != nil {
 		return nil, err
 	}
-	yv.loadValue(loadFullValue)
+	if yv.Kind != reflect.String { // delay loading strings until we use them
+		yv.loadValue(loadFullValue)
+	}
 	if yv.Unreadable != nil {
 		return nil, yv.Unreadable
 	}
@@ -1023,6 +1433,12 @@ func (scope *EvalScope) evalBinary(node *ast.BinaryExpr) (*Variable, error) {
 		return newConstant(constant.MakeBool(v), xv.mem), nil
 
 	default:
+		if xv.Kind == reflect.String {
+			xv.loadValue(loadFullValueLongerStrings)
+		}
+		if yv.Kind == reflect.String {
+			yv.loadValue(loadFullValueLongerStrings)
+		}
 		if xv.Value == nil {
 			return nil, fmt.Errorf("operator %s can not be applied to \"%s\"", node.Op.String(), exprToString(node.X))
 		}
@@ -1069,6 +1485,12 @@ func compareOp(op token.Token, xv *Variable, yv *Variable) (bool, error) {
 			case token.NEQ:
 				return true, nil
 			}
+		}
+		if xv.Kind == reflect.String {
+			xv.loadValue(loadFullValueLongerStrings)
+		}
+		if yv.Kind == reflect.String {
+			yv.loadValue(loadFullValueLongerStrings)
 		}
 		if int64(len(constant.StringVal(xv.Value))) != xv.Len || int64(len(constant.StringVal(yv.Value))) != yv.Len {
 			return false, fmt.Errorf("string too long for comparison")
@@ -1425,7 +1847,32 @@ func (v *Variable) findMethod(mname string) (*Variable, error) {
 		}
 		return r, nil
 	}
+	return v.tryFindMethodInEmbeddedFields(mname)
+}
 
+func (v *Variable) tryFindMethodInEmbeddedFields(mname string) (*Variable, error) {
+	structVar := v.maybeDereference()
+	structVar.Name = v.Name
+	if structVar.Unreadable != nil {
+		return structVar, nil
+	}
+	switch t := structVar.RealType.(type) {
+	case *godwarf.StructType:
+		for _, field := range t.Field {
+			if field.Embedded {
+				// Recursively check for promoted fields on the embedded field
+				embeddedVar, err := structVar.toField(field)
+				if err != nil {
+					return nil, err
+				}
+				if embeddedMethod, err := embeddedVar.findMethod(mname); err != nil {
+					return nil, err
+				} else if embeddedMethod != nil {
+					return embeddedMethod, nil
+				}
+			}
+		}
+	}
 	return nil, nil
 }
 

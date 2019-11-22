@@ -214,6 +214,13 @@ const (
 
 	// VariableReturnArgument means this variable is a function return value
 	VariableReturnArgument
+
+	// VariableFakeAddress means the address of this variable is either fake
+	// (i.e. the variable is partially or completely stored in a CPU register
+	// and doesn't have a real address) or possibly no longer availabe (because
+	// the variable is the return value of a function call and allocated on a
+	// frame that no longer exists)
+	VariableFakeAddress
 )
 
 // Variable describes a variable.
@@ -304,14 +311,27 @@ type DebuggerCommand struct {
 	// command.
 	ThreadID int `json:"threadID,omitempty"`
 	// GoroutineID is used to specify which thread to use with the SwitchGoroutine
-	// command.
+	// and Call commands.
 	GoroutineID int `json:"goroutineID,omitempty"`
 	// When ReturnInfoLoadConfig is not nil it will be used to load the value
 	// of any return variables.
 	ReturnInfoLoadConfig *LoadConfig
 	// Expr is the expression argument for a Call command
 	Expr string `json:"expr,omitempty"`
-	// UnsafeCall disabled parameter escape checking for function calls
+
+	// UnsafeCall disables parameter escape checking for function calls.
+	// Go objects can be allocated on the stack or on the heap. Heap objects
+	// can be used by any goroutine; stack objects can only be used by the
+	// goroutine that owns the stack they are allocated on and can not surivive
+	// the stack frame of allocation.
+	// The Go compiler will use escape analysis to determine whether to
+	// allocate an object on the stack or the heap.
+	// When injecting a function call Delve will check that no address of a
+	// stack allocated object is passed to the called function: this ensures
+	// the rules for stack objects will not be violated.
+	// If you are absolutely sure that the function you are calling will not
+	// violate the rules about stack objects you can disable this safety check
+	// by setting UnsafeCall to true.
 	UnsafeCall bool `json:"unsafeCall,omitempty"`
 }
 
@@ -343,6 +363,8 @@ const (
 	StepOut = "stepOut"
 	// StepInstruction continues for exactly 1 cpu instruction.
 	StepInstruction = "stepInstruction"
+	// ReverseStepInstruction reverses execution for exactly 1 cpu instruction.
+	ReverseStepInstruction = "reverseStepInstruction"
 	// Next continues to the next source line, not entering function calls.
 	Next = "next"
 	// SwitchThread switches the debugger's current thread context.
@@ -393,6 +415,7 @@ type GetVersionIn struct {
 type GetVersionOut struct {
 	DelveVersion string
 	APIVersion   int
+	Backend      string // backend currently in use
 }
 
 // SetAPIVersionIn is the input for SetAPIVersion.
@@ -442,3 +465,36 @@ type Checkpoint struct {
 	When  string
 	Where string
 }
+
+// Image represents a loaded shared object (go plugin or shared library)
+type Image struct {
+	Path    string
+	Address uint64
+}
+
+// Ancestor represents a goroutine ancestor
+type Ancestor struct {
+	ID    int64
+	Stack []Stackframe
+
+	Unreadable string
+}
+
+// StacktraceOptions is the type of the Opts field of StacktraceIn that
+// configures the stacktrace.
+// Tracks proc.StacktraceOptions
+type StacktraceOptions uint16
+
+const (
+	// StacktraceReadDefers requests a stacktrace decorated with deferred calls
+	// for each frame.
+	StacktraceReadDefers StacktraceOptions = 1 << iota
+
+	// StacktraceSimple requests a stacktrace where no stack switches will be
+	// attempted.
+	StacktraceSimple
+
+	// StacktraceG requests a stacktrace starting with the register
+	// values saved in the runtime.g structure.
+	StacktraceG
+)
