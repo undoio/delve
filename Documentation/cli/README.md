@@ -31,7 +31,7 @@ Command | Description
 [print](#print) | Evaluate an expression.
 [regs](#regs) | Print contents of CPU registers.
 [restart](#restart) | Restart process from a checkpoint or event.
-[rewind](#rewind) | Run backwards until breakpoint or program termination.
+[rewind](#rewind) | Run backwards until breakpoint or start of recorded history.
 [set](#set) | Changes the value of a variable.
 [source](#source) | Executes a file containing a list of delve commands
 [sources](#sources) | Print list of source files.
@@ -323,7 +323,7 @@ Restart process from a checkpoint or event.
 Aliases: r
 
 ## rewind
-Run backwards until breakpoint or program termination.
+Run backwards until breakpoint or start of recorded history.
 
 Aliases: rw
 

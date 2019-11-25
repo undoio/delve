@@ -349,7 +349,7 @@ If locspec is omitted edit will open the current source file in the editor, othe
 		c.cmds = append(c.cmds, command{
 			aliases: []string{"rewind", "rw"},
 			cmdFn:   rewind,
-			helpMsg: "Run backwards until breakpoint or program termination.",
+			helpMsg: "Run backwards until breakpoint or start of recorded history.",
 		})
 		c.cmds = append(c.cmds, command{
 			aliases: []string{"check", "checkpoint"},
