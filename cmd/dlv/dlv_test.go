@@ -62,7 +62,7 @@ func projectRoot() string {
 	for _, curpath := range gopaths {
 		// Detects "gopath mode" when GOPATH contains several paths ex. "d:\\dir\\gopath;f:\\dir\\gopath2"
 		if strings.Contains(wd, curpath) {
-			return filepath.Join(curpath, "src", "github.com", "go-delve", "delve")
+			return filepath.Join(curpath, "src", "github.com", "undoio", "delve")
 		}
 	}
 	val, err := exec.Command("go", "list", "-m", "-f", "{{ .Dir }}").Output()
