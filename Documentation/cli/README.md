@@ -33,7 +33,7 @@ Command | Description
 [regs](#regs) | Print contents of CPU registers.
 [restart](#restart) | Restart process from a checkpoint or event.
 [rev](#rev) | Reverses the execution of the target program for the command specified.
-[rewind](#rewind) | Run backwards until breakpoint or program termination.
+[rewind](#rewind) | Run backwards until breakpoint or start of recorded history.
 [set](#set) | Changes the value of a variable.
 [source](#source) | Executes a file containing a list of delve commands
 [sources](#sources) | Print list of source files.
@@ -341,7 +341,7 @@ Currently, only the rev step-instruction command is supported.
 
 
 ## rewind
-Run backwards until breakpoint or program termination.
+Run backwards until breakpoint or start of recorded history.
 
 Aliases: rw
 
