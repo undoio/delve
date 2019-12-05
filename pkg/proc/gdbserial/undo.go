@@ -54,6 +54,10 @@ func UndoRecord(cmd []string, wd string, quiet bool) (recording string, err erro
 	args = append(args, cmd...)
 	lrcmd := exec.Command("live-record", args...)
 
+	if wd != "" {
+		lrcmd.Dir = wd
+	}
+
 	if !quiet {
 		lrcmd.Env = os.Environ()
 		// Setting UNDO_debug_level alone is not enough
