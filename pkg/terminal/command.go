@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -33,6 +34,7 @@ const (
 	noPrefix = cmdPrefix(0)
 	onPrefix = cmdPrefix(1 << iota)
 	deferredPrefix
+	revPrefix
 )
 
 type callContext struct {
@@ -126,18 +128,29 @@ A tracepoint is a breakpoint that does not stop the execution of the program, in
 See also: "help on", "help cond" and "help clear"`},
 		{aliases: []string{"restart", "r"}, cmdFn: restart, helpMsg: `Restart process.
 
-	restart [checkpoint]
-	restart [-noargs] newargv...
+For recorded targets the command takes the following forms:
 
-For recorded processes restarts from the start or from the specified
-checkpoint.  For normal processes restarts the process, optionally changing
-the arguments.  With -noargs, the process starts with an empty commandline.
+	restart				resets ot the start of the recording
+	restart [checkpoint]		resets the recording to the given checkpoint
+	restart -r [newargv...]		re-records the target process
+	
+For live targets the command takes the following forms:
+
+	restart [newargv...]		restarts the process
+
+If newargv is omitted the process is restarted (or re-recorded) with the same argument vector.
+If -noargs is specified instead, the argument vector is cleared.
 `},
 		{aliases: []string{"continue", "c"}, cmdFn: c.cont, helpMsg: "Run until breakpoint or program termination."},
 		{aliases: []string{"step", "s"}, cmdFn: c.step, helpMsg: "Single step through program."},
-		{aliases: []string{"step-instruction", "si"}, cmdFn: c.stepInstruction, helpMsg: "Single step a single cpu instruction."},
-		{aliases: []string{"next", "n"}, cmdFn: c.next, helpMsg: "Step over to next source line."},
-		{aliases: []string{"stepout"}, cmdFn: c.stepout, helpMsg: "Step out of the current function."},
+		{aliases: []string{"step-instruction", "si"}, allowedPrefixes: revPrefix, cmdFn: c.stepInstruction, helpMsg: "Single step a single cpu instruction."},
+		{aliases: []string{"next", "n"}, cmdFn: c.next, helpMsg: `Step over to next source line.
+
+	 next [count]
+
+Optional [count] argument allows you to skip multiple lines.
+`},
+		{aliases: []string{"stepout", "so"}, cmdFn: c.stepout, helpMsg: "Step out of the current function."},
 		{aliases: []string{"call"}, cmdFn: c.call, helpMsg: `Resumes process, injecting a function call (EXPERIMENTAL!!!)
 	
 	call [-unsafe] <function call expression>
@@ -166,7 +179,7 @@ Current limitations:
 	clearall [<linespec>]
 
 If called with the linespec argument it will delete all the breakpoints matching the linespec. If linespec is omitted all breakpoints are deleted.`},
-		{aliases: []string{"goroutines"}, cmdFn: goroutines, helpMsg: `List program goroutines.
+		{aliases: []string{"goroutines", "grs"}, cmdFn: goroutines, helpMsg: `List program goroutines.
 
 	goroutines [-u (default: user location)|-r (runtime location)|-g (go statement location)|-s (start location)] [ -t (stack trace)]
 
@@ -179,7 +192,7 @@ Print out info for every goroutine. The flag controls what information is shown 
 	-t	displays stack trace of goroutine
 
 If no flag is specified the default is -u.`},
-		{aliases: []string{"goroutine"}, allowedPrefixes: onPrefix, cmdFn: c.goroutine, helpMsg: `Shows or changes current goroutine
+		{aliases: []string{"goroutine", "gr"}, allowedPrefixes: onPrefix, cmdFn: c.goroutine, helpMsg: `Shows or changes current goroutine
 
 	goroutine
 	goroutine <id>
@@ -251,11 +264,17 @@ When connected to a headless instance started with the --accept-multiclient, pas
 Show source around current point or provided linespec.`},
 		{aliases: []string{"stack", "bt"}, allowedPrefixes: onPrefix, cmdFn: stackCommand, helpMsg: `Print stack trace.
 
-	[goroutine <n>] [frame <m>] stack [<depth>] [-full] [-offsets] [-defer]
+	[goroutine <n>] [frame <m>] stack [<depth>] [-full] [-offsets] [-defer] [-a <n>] [-adepth <depth>] [-mode <mode>]
 
 	-full		every stackframe is decorated with the value of its local variables and arguments.
 	-offsets	prints frame offset of each frame.
 	-defer		prints deferred function call stack for each frame.
+	-a <n>		prints stacktrace of n ancestors of the selected goroutine (target process must have tracebackancestors enabled)
+	-adepth <depth>	configures depth of ancestor stacktrace
+	-mode <mode>	specifies the stacktrace mode, possible values are:
+			normal	- attempts to automatically switch between cgo frames and go frames
+			simple	- disables automatic switch between cgo and go
+			fromg	- starts from the registers stored in the runtime.g struct
 `},
 		{aliases: []string{"frame"},
 			cmdFn: func(t *Term, ctx callContext, arg string) error {
@@ -295,7 +314,11 @@ Move the current frame down by <m>. The second form runs the command on the give
 Executes the specified command (print, args, locals) in the context of the n-th deferred call in the current frame.`},
 		{aliases: []string{"source"}, cmdFn: c.sourceCommand, helpMsg: `Executes a file containing a list of delve commands
 
-	source <path>`},
+	source <path>
+	
+If path ends with the .star extension it will be interpreted as a starlark script. See $GOPATH/src/github.com/undoio/delve/Documentation/cli/starlark.md for the syntax.
+
+If path is a single '-' character an interactive starlark interpreter will start instead. Type 'exit' to exit.`},
 		{aliases: []string{"disassemble", "disass"}, cmdFn: disassCommand, helpMsg: `Disassembler.
 
 	[goroutine <n>] [frame <m>] disassemble [-a <start> <end>] [-l <locspec>]
@@ -343,6 +366,7 @@ Defines <alias> as an alias to <command> or removes an alias.`},
 	edit [locspec]
 	
 If locspec is omitted edit will open the current source file in the editor, otherwise it will open the specified location.`},
+		{aliases: []string{"libraries"}, cmdFn: libraries, helpMsg: `List loaded dynamic libraries`},
 	}
 
 	if client == nil || client.Recorded() {
@@ -371,6 +395,12 @@ The "note" is arbitrary text that can be used to identify the checkpoint, if it 
 			helpMsg: `Deletes checkpoint.
 
 	clear-checkpoint <id>`,
+		})
+		c.cmds = append(c.cmds, command{
+			aliases: []string{"rev"},
+			cmdFn:   c.revCmd,
+			helpMsg: `Reverses the execution of the target program for the command specified.
+Currently, only the rev step-instruction command is supported.`,
 		})
 		for i := range c.cmds {
 			v := &c.cmds[i]
@@ -581,7 +611,7 @@ func printGoroutines(t *Term, gs []*api.Goroutine, fgl formatGoroutineLoc, bPrin
 		}
 		fmt.Printf("%sGoroutine %s\n", prefix, formatGoroutine(g, fgl))
 		if bPrintStack {
-			stack, err := t.client.Stacktrace(g.ID, 10, false, nil)
+			stack, err := t.client.Stacktrace(g.ID, 10, 0, nil)
 			if err != nil {
 				return err
 			}
@@ -725,7 +755,7 @@ func (c *Commands) frameCommand(t *Term, ctx callContext, argstr string, directi
 	if frame < 0 {
 		return fmt.Errorf("Invalid frame %d", frame)
 	}
-	stack, err := t.client.Stacktrace(ctx.Scope.GoroutineID, frame, false, nil)
+	stack, err := t.client.Stacktrace(ctx.Scope.GoroutineID, frame, 0, nil)
 	if err != nil {
 		return err
 	}
@@ -832,66 +862,112 @@ func writeGoroutineLong(w io.Writer, g *api.Goroutine, prefix string) {
 		prefix, formatLocation(g.StartLoc))
 }
 
-func parseArgs(args string) ([]string, error) {
+func restart(t *Term, ctx callContext, args string) error {
+	if t.client.Recorded() {
+		return restartRecorded(t, ctx, args)
+	}
+
+	return restartLive(t, ctx, args)
+}
+
+func restartRecorded(t *Term, ctx callContext, args string) error {
+	v := strings.SplitN(args, " ", 2)
+
+	rerecord := false
+	resetArgs := false
+	newArgv := []string{}
+	restartPos := ""
+
+	if len(v) > 0 {
+		if v[0] == "-r" {
+			rerecord = true
+			if len(v) == 2 {
+				var err error
+				resetArgs, newArgv, err = parseNewArgv(v[1])
+				if err != nil {
+					return err
+				}
+			}
+		} else {
+			if len(v) > 1 {
+				return fmt.Errorf("too many arguments to restart")
+			}
+			restartPos = v[0]
+		}
+	}
+
+	if err := restartIntl(t, rerecord, restartPos, resetArgs, newArgv); err != nil {
+		return err
+	}
+
+	state, err := t.client.GetState()
+	if err != nil {
+		return err
+	}
+	printcontext(t, state)
+	printfile(t, state.CurrentThread.File, state.CurrentThread.Line, true)
+	return nil
+}
+
+// parseOptionalCount parses an optional count argument.
+// If there are not arguments, a value of 1 is returned as the default.
+func parseOptionalCount(arg string) (int64, error) {
+	if len(arg) == 0 {
+		return 1, nil
+	}
+	return strconv.ParseInt(arg, 0, 64)
+}
+
+func restartLive(t *Term, ctx callContext, args string) error {
+	resetArgs, newArgv, err := parseNewArgv(args)
+	if err != nil {
+		return err
+	}
+
+	if err := restartIntl(t, false, "", resetArgs, newArgv); err != nil {
+		return err
+	}
+
+	fmt.Println("Process restarted with PID", t.client.ProcessPid())
+	return nil
+}
+
+func restartIntl(t *Term, rerecord bool, restartPos string, resetArgs bool, newArgv []string) error {
+	discarded, err := t.client.RestartFrom(rerecord, restartPos, resetArgs, newArgv)
+	if err != nil {
+		return err
+	}
+	for i := range discarded {
+		fmt.Printf("Discarded %s at %s: %v\n", formatBreakpointName(discarded[i].Breakpoint, false), formatBreakpointLocation(discarded[i].Breakpoint), discarded[i].Reason)
+	}
+	return nil
+}
+
+func parseNewArgv(args string) (resetArgs bool, newArgv []string, err error) {
 	if args == "" {
-		return nil, nil
+		return false, nil, nil
 	}
 	v, err := argv.Argv([]rune(args), argv.ParseEnv(os.Environ()),
 		func(s []rune, _ map[string]string) ([]rune, error) {
 			return nil, fmt.Errorf("Backtick not supported in '%s'", string(s))
 		})
 	if err != nil {
-		return nil, err
+		return false, nil, err
 	}
 	if len(v) != 1 {
-		return nil, fmt.Errorf("Illegal commandline '%s'", args)
+		return false, nil, fmt.Errorf("Illegal commandline '%s'", args)
 	}
-	return v[0], nil
-}
-
-func restart(t *Term, ctx callContext, args string) error {
-	v, err := parseArgs(args)
-	if err != nil {
-		return err
+	w := v[0]
+	if len(w) == 0 {
+		return false, nil, nil
 	}
-	var restartPos string
-	var resetArgs bool
-	if t.client.Recorded() {
-		if len(v) > 1 {
-			return fmt.Errorf("restart: illegal position '%v'", v)
+	if w[0] == "-noargs" {
+		if len(w) > 1 {
+			return false, nil, fmt.Errorf("Too many arguments to restart")
 		}
-		if len(v) == 1 {
-			restartPos = v[0]
-			v = nil
-		}
-	} else if len(v) > 0 {
-		resetArgs = true
-		if v[0] == "-noargs" {
-			if len(v) > 1 {
-				return fmt.Errorf("restart: -noargs does not take any arg")
-			}
-			v = nil
-		}
+		return true, nil, nil
 	}
-	discarded, err := t.client.RestartFrom(restartPos, resetArgs, v)
-	if err != nil {
-		return err
-	}
-	if !t.client.Recorded() {
-		fmt.Println("Process restarted with PID", t.client.ProcessPid())
-	}
-	for i := range discarded {
-		fmt.Printf("Discarded %s at %s: %v\n", formatBreakpointName(discarded[i].Breakpoint, false), formatBreakpointLocation(discarded[i].Breakpoint), discarded[i].Reason)
-	}
-	if t.client.Recorded() {
-		state, err := t.client.GetState()
-		if err != nil {
-			return err
-		}
-		printcontext(t, state)
-		printfile(t, state.CurrentThread.File, state.CurrentThread.Line, true)
-	}
-	return nil
+	return true, w, nil
 }
 
 func printcontextNoState(t *Term) {
@@ -917,9 +993,11 @@ func (c *Commands) cont(t *Term, ctx callContext, args string) error {
 	return nil
 }
 
-func continueUntilCompleteNext(t *Term, state *api.DebuggerState, op string) error {
+func continueUntilCompleteNext(t *Term, state *api.DebuggerState, op string, shouldPrintFile bool) error {
 	if !state.NextInProgress {
-		printfile(t, state.CurrentThread.File, state.CurrentThread.Line, true)
+		if shouldPrintFile {
+			printfile(t, state.CurrentThread.File, state.CurrentThread.Line, true)
+		}
 		return nil
 	}
 	for {
@@ -968,7 +1046,7 @@ func (c *Commands) step(t *Term, ctx callContext, args string) error {
 		return err
 	}
 	printcontext(t, state)
-	return continueUntilCompleteNext(t, state, "step")
+	return continueUntilCompleteNext(t, state, "step", true)
 }
 
 var notOnFrameZeroErr = errors.New("not on topmost frame")
@@ -980,13 +1058,33 @@ func (c *Commands) stepInstruction(t *Term, ctx callContext, args string) error 
 	if c.frame != 0 {
 		return notOnFrameZeroErr
 	}
-	state, err := exitedToError(t.client.StepInstruction())
+
+	var fn func() (*api.DebuggerState, error)
+	if ctx.Prefix == revPrefix {
+		fn = t.client.ReverseStepInstruction
+	} else {
+		fn = t.client.StepInstruction
+	}
+
+	state, err := exitedToError(fn())
 	if err != nil {
 		printcontextNoState(t)
 		return err
 	}
 	printcontext(t, state)
 	printfile(t, state.CurrentThread.File, state.CurrentThread.Line, true)
+	return nil
+}
+
+func (c *Commands) revCmd(t *Term, ctx callContext, args string) error {
+	if len(args) == 0 {
+		return errors.New("not enough arguments")
+	}
+
+	ctx.Prefix = revPrefix
+	if err := c.CallWithContext(args, t, ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -997,13 +1095,29 @@ func (c *Commands) next(t *Term, ctx callContext, args string) error {
 	if c.frame != 0 {
 		return notOnFrameZeroErr
 	}
-	state, err := exitedToError(t.client.Next())
-	if err != nil {
-		printcontextNoState(t)
+	var count int64
+	var err error
+	if count, err = parseOptionalCount(args); err != nil {
 		return err
+	} else if count <= 0 {
+		return errors.New("Invalid next count")
 	}
-	printcontext(t, state)
-	return continueUntilCompleteNext(t, state, "next")
+	for ; count > 0; count-- {
+		state, err := exitedToError(t.client.Next())
+		if err != nil {
+			printcontextNoState(t)
+			return err
+		}
+		// If we're about the exit the loop, print the context.
+		finishedNext := count == 1
+		if finishedNext {
+			printcontext(t, state)
+		}
+		if err := continueUntilCompleteNext(t, state, "next", finishedNext); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Commands) stepout(t *Term, ctx callContext, args string) error {
@@ -1019,7 +1133,7 @@ func (c *Commands) stepout(t *Term, ctx callContext, args string) error {
 		return err
 	}
 	printcontext(t, state)
-	return continueUntilCompleteNext(t, state, "stepout")
+	return continueUntilCompleteNext(t, state, "stepout", true)
 }
 
 func (c *Commands) call(t *Term, ctx callContext, args string) error {
@@ -1032,14 +1146,14 @@ func (c *Commands) call(t *Term, ctx callContext, args string) error {
 		unsafe = true
 		args = args[len(unsafePrefix):]
 	}
-	state, err := exitedToError(t.client.Call(args, unsafe))
+	state, err := exitedToError(t.client.Call(ctx.Scope.GoroutineID, args, unsafe))
 	c.frame = 0
 	if err != nil {
 		printcontextNoState(t)
 		return err
 	}
 	printcontext(t, state)
-	return continueUntilCompleteNext(t, state, "call")
+	return continueUntilCompleteNext(t, state, "call", true)
 }
 
 func clear(t *Term, ctx callContext, args string) error {
@@ -1406,19 +1520,36 @@ func stackCommand(t *Term, ctx callContext, args string) error {
 	if sa.full {
 		cfg = &ShortLoadConfig
 	}
-	stack, err := t.client.Stacktrace(ctx.Scope.GoroutineID, sa.depth, sa.readDefers, cfg)
+	stack, err := t.client.Stacktrace(ctx.Scope.GoroutineID, sa.depth, sa.opts, cfg)
 	if err != nil {
 		return err
 	}
 	printStack(stack, "", sa.offsets)
+	if sa.ancestors > 0 {
+		ancestors, err := t.client.Ancestors(ctx.Scope.GoroutineID, sa.ancestors, sa.ancestorDepth)
+		if err != nil {
+			return err
+		}
+		for _, ancestor := range ancestors {
+			fmt.Printf("Created by Goroutine %d:\n", ancestor.ID)
+			if ancestor.Unreadable != "" {
+				fmt.Printf("\t%s\n", ancestor.Unreadable)
+				continue
+			}
+			printStack(ancestor.Stack, "\t", false)
+		}
+	}
 	return nil
 }
 
 type stackArgs struct {
-	depth      int
-	full       bool
-	offsets    bool
-	readDefers bool
+	depth   int
+	full    bool
+	offsets bool
+	opts    api.StacktraceOptions
+
+	ancestors     int
+	ancestorDepth int
 }
 
 func parseStackArgs(argstr string) (stackArgs, error) {
@@ -1428,14 +1559,55 @@ func parseStackArgs(argstr string) (stackArgs, error) {
 	}
 	if argstr != "" {
 		args := strings.Split(argstr, " ")
-		for i := range args {
+		for i := 0; i < len(args); i++ {
+			numarg := func(name string) (int, error) {
+				if i >= len(args) {
+					return 0, fmt.Errorf("expected number after %s", name)
+				}
+				n, err := strconv.Atoi(args[i])
+				if err != nil {
+					return 0, fmt.Errorf("expected number after %s: %v", name, err)
+				}
+				return n, nil
+
+			}
 			switch args[i] {
 			case "-full":
 				r.full = true
 			case "-offsets":
 				r.offsets = true
 			case "-defer":
-				r.readDefers = true
+				r.opts |= api.StacktraceReadDefers
+			case "-mode":
+				i++
+				if i >= len(args) {
+					return stackArgs{}, fmt.Errorf("expected normal, simple or fromg after -mode")
+				}
+				switch args[i] {
+				case "normal":
+					r.opts &^= api.StacktraceSimple
+					r.opts &^= api.StacktraceG
+				case "simple":
+					r.opts |= api.StacktraceSimple
+				case "fromg":
+					r.opts |= api.StacktraceG | api.StacktraceSimple
+				default:
+					return stackArgs{}, fmt.Errorf("expected normal, simple or fromg after -mode")
+				}
+			case "-a":
+				i++
+				n, err := numarg("-a")
+				if err != nil {
+					return stackArgs{}, err
+				}
+				r.ancestors = n
+			case "-adepth":
+				i++
+				n, err := numarg("-adepth")
+				if err != nil {
+					return stackArgs{}, err
+				}
+				r.ancestorDepth = n
 			default:
 				n, err := strconv.Atoi(args[i])
 				if err != nil {
@@ -1444,6 +1616,9 @@ func parseStackArgs(argstr string) (stackArgs, error) {
 				r.depth = n
 			}
 		}
+	}
+	if r.ancestors > 0 && r.ancestorDepth == 0 {
+		r.ancestorDepth = r.depth
 	}
 	return r, nil
 }
@@ -1466,7 +1641,7 @@ func getLocation(t *Term, ctx callContext, args string, showContext bool) (file 
 		return state.CurrentThread.File, state.CurrentThread.Line, true, nil
 
 	case len(args) == 0 && ctx.scoped():
-		locs, err := t.client.Stacktrace(ctx.Scope.GoroutineID, ctx.Scope.Frame, false, nil)
+		locs, err := t.client.Stacktrace(ctx.Scope.GoroutineID, ctx.Scope.Frame, 0, nil)
 		if err != nil {
 			return "", 0, false, err
 		}
@@ -1516,6 +1691,15 @@ func listCommand(t *Term, ctx callContext, args string) error {
 func (c *Commands) sourceCommand(t *Term, ctx callContext, args string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("wrong number of arguments: source <filename>")
+	}
+
+	if filepath.Ext(args) == ".star" {
+		_, err := t.starlarkEnv.Execute(args, nil, "main", nil)
+		return err
+	}
+
+	if args == "-" {
+		return t.starlarkEnv.REPL()
 	}
 
 	return c.executeFile(t, args)
@@ -1578,6 +1762,18 @@ func disassCommand(t *Term, ctx callContext, args string) error {
 
 	DisasmPrint(disasm, os.Stdout)
 
+	return nil
+}
+
+func libraries(t *Term, ctx callContext, args string) error {
+	libs, err := t.client.ListDynamicLibraries()
+	if err != nil {
+		return err
+	}
+	d := digits(len(libs))
+	for i := range libs {
+		fmt.Printf("%"+strconv.Itoa(d)+"d. %#x %s\n", i, libs[i].Address, libs[i].Path)
+	}
 	return nil
 }
 
@@ -1997,7 +2193,7 @@ func checkpoints(t *Term, ctx callContext, args string) error {
 }
 
 func clearCheckpoint(t *Term, ctx callContext, args string) error {
-	if len(args) < 0 {
+	if len(args) == 0 {
 		return errors.New("not enough arguments to clear-checkpoint")
 	}
 	if args[0] != 'c' {

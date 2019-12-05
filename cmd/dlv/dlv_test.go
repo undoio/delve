@@ -18,11 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/undoio/delve/cmd/dlv/cmds"
 	protest "github.com/undoio/delve/pkg/proc/test"
 	"github.com/undoio/delve/pkg/terminal"
 	"github.com/undoio/delve/service/rpc2"
-	"github.com/spf13/cobra/doc"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -73,7 +71,7 @@ func projectRoot() string {
 }
 
 func TestBuild(t *testing.T) {
-	const listenAddr = "localhost:40573"
+	const listenAddr = "127.0.0.1:40573"
 	var err error
 
 	cmd := exec.Command("go", "run", "scripts/make.go", "build")
@@ -123,7 +121,7 @@ func testOutput(t *testing.T, dlvbin, output string, delveCmds []string) (stdout
 	buildtestdir := filepath.Join(protest.FindFixturesDir(), "buildtest")
 
 	c := []string{dlvbin, "debug"}
-	debugbin := filepath.Join(buildtestdir, "debug")
+	debugbin := filepath.Join(buildtestdir, "__debug_bin")
 	if output != "" {
 		c = append(c, "--output", output)
 		if filepath.IsAbs(output) {
@@ -218,6 +216,39 @@ func TestOutput(t *testing.T) {
 	}
 }
 
+// TestContinue verifies that the debugged executable starts immediately with --continue
+func TestContinue(t *testing.T) {
+	const listenAddr = "127.0.0.1:40573"
+
+	dlvbin, tmpdir := getDlvBin(t)
+	defer os.RemoveAll(tmpdir)
+
+	buildtestdir := filepath.Join(protest.FindFixturesDir(), "buildtest")
+	cmd := exec.Command(dlvbin, "debug", "--headless", "--continue", "--accept-multiclient", "--listen", listenAddr)
+	cmd.Dir = buildtestdir
+	stdout, err := cmd.StdoutPipe()
+	assertNoError(err, t, "stderr pipe")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("could not start headless instance: %v", err)
+	}
+
+	scan := bufio.NewScanner(stdout)
+	// wait for the debugger to start
+	for scan.Scan() {
+		t.Log(scan.Text())
+		if scan.Text() == "hello world!" {
+			break
+		}
+	}
+
+	// and detach from and kill the headless instance
+	client := rpc2.NewClient(listenAddr)
+	if err := client.Detach(true); err != nil {
+		t.Fatalf("error detaching from headless instance: %v", err)
+	}
+	cmd.Wait()
+}
+
 func checkAutogenDoc(t *testing.T, filename, gencommand string, generated []byte) {
 	saved := slurpFile(t, filepath.Join(projectRoot(), filename))
 
@@ -247,20 +278,36 @@ func TestGeneratedDoc(t *testing.T) {
 	var generatedBuf bytes.Buffer
 	commands := terminal.DebugCommands(nil)
 	commands.WriteMarkdown(&generatedBuf)
-	cliDocFilename := "Documentation/cli/README.md"
-	checkAutogenDoc(t, cliDocFilename, "scripts/gen-cli-docs.go", generatedBuf.Bytes())
+	checkAutogenDoc(t, "Documentation/cli/README.md", "scripts/gen-cli-docs.go", generatedBuf.Bytes())
 
 	// Checks gen-usage-docs.go
 	tempDir, err := ioutil.TempDir(os.TempDir(), "test-gen-doc")
 	assertNoError(err, t, "TempDir")
-	defer cmds.SafeRemoveAll(tempDir)
-	doc.GenMarkdownTree(cmds.New(true), tempDir)
+	defer protest.SafeRemoveAll(tempDir)
+	cmd := exec.Command("go", "run", "scripts/gen-usage-docs.go", tempDir)
+	cmd.Dir = projectRoot()
+	cmd.Run()
 	entries, err := ioutil.ReadDir(tempDir)
 	assertNoError(err, t, "ReadDir")
 	for _, doc := range entries {
 		docFilename := "Documentation/usage/" + doc.Name()
 		checkAutogenDoc(t, docFilename, "scripts/gen-usage-docs.go", slurpFile(t, tempDir+"/"+doc.Name()))
 	}
+
+	runScript := func(args ...string) []byte {
+		a := []string{"run"}
+		a = append(a, args...)
+		cmd := exec.Command("go", a...)
+		cmd.Dir = projectRoot()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("could not run script %v: %v (output: %q)", args, err, string(out))
+		}
+		return out
+	}
+
+	checkAutogenDoc(t, "pkg/terminal/starbind/starlark_mapping.go", "'go generate' inside pkg/terminal/starbind", runScript("scripts/gen-starlark-bindings.go", "go", "-"))
+	checkAutogenDoc(t, "Documentation/cli/starlark.md", "'go generate' inside pkg/terminal/starbind", runScript("scripts/gen-starlark-bindings.go", "doc/dummy", "Documentation/cli/starlark.md"))
 }
 
 func TestExitInInit(t *testing.T) {

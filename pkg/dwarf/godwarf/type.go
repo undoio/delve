@@ -55,22 +55,31 @@ func (recCheck recCheck) acquire(off dwarf.Offset) (release func()) {
 	}
 }
 
+func sizeAlignToSize(sz, align int64) int64 {
+	return sz
+}
+
+func sizeAlignToAlign(sz, align int64) int64 {
+	return align
+}
+
 // A Type conventionally represents a pointer to any of the
 // specific Type structures (CharType, StructType, etc.).
-//TODO: remove this use dwarf.Type
 type Type interface {
 	Common() *CommonType
 	String() string
 	Size() int64
+	Align() int64
 
 	stringIntl(recCheck) string
-	sizeIntl(recCheck) int64
+	sizeAlignIntl(recCheck) (int64, int64)
 }
 
 // A CommonType holds fields common to multiple types.
 // If a field is not known or not applicable for a given type,
 // the zero value is used.
 type CommonType struct {
+	Index       int          // index supplied by caller of ReadType
 	ByteSize    int64        // size of value of this type, in bytes
 	Name        string       // name that can be used to refer to type
 	ReflectKind reflect.Kind // the reflect kind of the type.
@@ -79,8 +88,9 @@ type CommonType struct {
 
 func (c *CommonType) Common() *CommonType { return c }
 
-func (c *CommonType) Size() int64             { return c.ByteSize }
-func (c *CommonType) sizeIntl(recCheck) int64 { return c.ByteSize }
+func (c *CommonType) Size() int64                           { return c.ByteSize }
+func (c *CommonType) Align() int64                          { return c.ByteSize }
+func (c *CommonType) sizeAlignIntl(recCheck) (int64, int64) { return c.ByteSize, c.ByteSize }
 
 // Basic types
 
@@ -101,6 +111,8 @@ func (t *BasicType) stringIntl(recCheck) string {
 	}
 	return "?"
 }
+
+func (t *BasicType) Align() int64 { return t.CommonType.ByteSize }
 
 // A CharType represents a signed character type.
 type CharType struct {
@@ -167,15 +179,15 @@ func (t *QualType) stringIntl(recCheck recCheck) string {
 	return t.Qual + " " + t.Type.stringIntl(recCheck)
 }
 
-func (t *QualType) Size() int64 { return t.sizeIntl(make(recCheck)) }
+func (t *QualType) Size() int64 { return sizeAlignToSize(t.sizeAlignIntl(make(recCheck))) }
 
-func (t *QualType) sizeIntl(recCheck recCheck) int64 {
+func (t *QualType) sizeAlignIntl(recCheck recCheck) (int64, int64) {
 	release := recCheck.acquire(t.CommonType.Offset)
 	if release == nil {
-		return t.CommonType.ByteSize
+		return t.CommonType.ByteSize, t.CommonType.ByteSize
 	}
 	defer release()
-	return t.Type.sizeIntl(recCheck)
+	return t.Type.sizeAlignIntl(recCheck)
 }
 
 // An ArrayType represents a fixed size array type.
@@ -197,15 +209,20 @@ func (t *ArrayType) stringIntl(recCheck recCheck) string {
 	return "[" + strconv.FormatInt(t.Count, 10) + "]" + t.Type.stringIntl(recCheck)
 }
 
-func (t *ArrayType) Size() int64 { return t.sizeIntl(make(recCheck)) }
+func (t *ArrayType) Size() int64  { return sizeAlignToSize(t.sizeAlignIntl(make(recCheck))) }
+func (t *ArrayType) Align() int64 { return sizeAlignToAlign(t.sizeAlignIntl(make(recCheck))) }
 
-func (t *ArrayType) sizeIntl(recCheck recCheck) int64 {
+func (t *ArrayType) sizeAlignIntl(recCheck recCheck) (int64, int64) {
 	release := recCheck.acquire(t.CommonType.Offset)
 	if release == nil {
-		return t.CommonType.ByteSize
+		return t.CommonType.ByteSize, 1
 	}
 	defer release()
-	return t.Count * t.Type.sizeIntl(recCheck)
+	sz, align := t.Type.sizeAlignIntl(recCheck)
+	if t.CommonType.ByteSize != 0 {
+		return t.CommonType.ByteSize, align
+	}
+	return sz * t.Count, align
 }
 
 // A VoidType represents the C void type.
@@ -291,6 +308,21 @@ func (t *StructType) Defn(recCheck recCheck) string {
 	}
 	s += "}"
 	return s
+}
+
+func (t *StructType) Size() int64  { return sizeAlignToSize(t.sizeAlignIntl(make(recCheck))) }
+func (t *StructType) Align() int64 { return sizeAlignToAlign(t.sizeAlignIntl(make(recCheck))) }
+
+func (t *StructType) sizeAlignIntl(recCheck recCheck) (int64, int64) {
+	release := recCheck.acquire(t.CommonType.Offset)
+	if release == nil {
+		return t.CommonType.ByteSize, 1
+	}
+	defer release()
+	if len(t.Field) == 0 {
+		return t.CommonType.ByteSize, 1
+	}
+	return t.CommonType.ByteSize, sizeAlignToAlign(t.Field[0].Type.sizeAlignIntl(recCheck))
 }
 
 // A SliceType represents a Go slice type. It looks like a StructType, describing
@@ -424,15 +456,18 @@ func (t *TypedefType) String() string { return t.stringIntl(nil) }
 
 func (t *TypedefType) stringIntl(recCheck recCheck) string { return t.Name }
 
-func (t *TypedefType) Size() int64 { return t.sizeIntl(make(recCheck)) }
+func (t *TypedefType) Size() int64 { sz, _ := t.sizeAlignIntl(make(recCheck)); return sz }
 
-func (t *TypedefType) sizeIntl(recCheck recCheck) int64 {
+func (t *TypedefType) sizeAlignIntl(recCheck recCheck) (int64, int64) {
 	release := recCheck.acquire(t.CommonType.Offset)
 	if release == nil {
-		return t.CommonType.ByteSize
+		return t.CommonType.ByteSize, t.CommonType.ByteSize
 	}
 	defer release()
-	return t.Type.sizeIntl(recCheck)
+	if t.Type == nil {
+		return 0, 1
+	}
+	return t.Type.sizeAlignIntl(recCheck)
 }
 
 // A MapType represents a Go map type. It looks like a TypedefType, describing
@@ -478,8 +513,12 @@ func (t *ChanType) stringIntl(recCheck recCheck) string {
 }
 
 // Type reads the type at off in the DWARF ``info'' section.
-func ReadType(d *dwarf.Data, off dwarf.Offset, typeCache map[dwarf.Offset]Type) (Type, error) {
-	return readType(d, "info", d.Reader(), off, typeCache)
+func ReadType(d *dwarf.Data, index int, off dwarf.Offset, typeCache map[dwarf.Offset]Type) (Type, error) {
+	typ, err := readType(d, "info", d.Reader(), off, typeCache, nil)
+	if typ != nil {
+		typ.Common().Index = index
+	}
+	return typ, err
 }
 
 func getKind(e *dwarf.Entry) reflect.Kind {
@@ -487,9 +526,14 @@ func getKind(e *dwarf.Entry) reflect.Kind {
 	return reflect.Kind(integer)
 }
 
+type delayedSize struct {
+	ct *CommonType // type that needs its size computed from ut
+	ut Type        // underlying type
+}
+
 // readType reads a type from r at off of name using and updating a
-// type cache.
-func readType(d *dwarf.Data, name string, r *dwarf.Reader, off dwarf.Offset, typeCache map[dwarf.Offset]Type) (Type, error) {
+// type cache, callers sohuld pass nil to delayedSize, it is used for recursion.
+func readType(d *dwarf.Data, name string, r *dwarf.Reader, off dwarf.Offset, typeCache map[dwarf.Offset]Type, delayedSizes *[]delayedSize) (Type, error) {
 	if t, ok := typeCache[off]; ok {
 		return t, nil
 	}
@@ -503,9 +547,23 @@ func readType(d *dwarf.Data, name string, r *dwarf.Reader, off dwarf.Offset, typ
 		return nil, dwarf.DecodeError{name, off, "no type at offset"}
 	}
 
+	// If this is the root of the recursion, prepare to resolve typedef sizes
+	// once the recursion is done. This must be done after the type graph is
+	// constructed because it may need to resolve cycles in a different order
+	// than readType encounters them.
+	if delayedSizes == nil {
+		var delayedSizeList []delayedSize
+		defer func() {
+			for _, ds := range delayedSizeList {
+				ds.ct.ByteSize = ds.ut.Size()
+			}
+		}()
+		delayedSizes = &delayedSizeList
+	}
+
 	// Parse type from dwarf.Entry.
 	// Must always set typeCache[off] before calling
-	// d.Type recursively, to handle circular types correctly.
+	// d.readType recursively, to handle circular types correctly.
 	var typ Type
 
 	nextDepth := 0
@@ -550,7 +608,7 @@ func readType(d *dwarf.Data, name string, r *dwarf.Reader, off dwarf.Offset, typ
 		var t Type
 		switch toff := tval.(type) {
 		case dwarf.Offset:
-			if t, err = readType(d, name, d.Reader(), toff, typeCache); err != nil {
+			if t, err = readType(d, name, d.Reader(), toff, typeCache, delayedSizes); err != nil {
 				return nil
 			}
 		case uint64:
@@ -963,13 +1021,13 @@ func readType(d *dwarf.Data, name string, r *dwarf.Reader, off dwarf.Offset, typ
 			b = -1
 			switch t := typ.(type) {
 			case *TypedefType:
-				b = t.Type.Size()
+				*delayedSizes = append(*delayedSizes, delayedSize{typ.Common(), t.Type})
 			case *MapType:
-				b = t.Type.Size()
+				*delayedSizes = append(*delayedSizes, delayedSize{typ.Common(), t.Type})
 			case *ChanType:
-				b = t.Type.Size()
+				*delayedSizes = append(*delayedSizes, delayedSize{typ.Common(), t.Type})
 			case *InterfaceType:
-				b = t.Type.Size()
+				*delayedSizes = append(*delayedSizes, delayedSize{typ.Common(), t.Type})
 			case *PtrType:
 				b = int64(addressSize)
 			case *FuncType:

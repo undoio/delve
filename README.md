@@ -4,7 +4,7 @@
 [![GoDoc](https://godoc.org/github.com/undoio/delve?status.svg)](https://godoc.org/github.com/undoio/delve)
 [![Join the chat at https://gitter.im/go-delve/delve](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/go-delve/delve?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
-The Github issue tracker is for **bugs** only. Please use the [developer mailing list](https://groups.google.com/forum/#!forum/delve-dev) for any feature proposals and discussions.
+The GitHub issue tracker is for **bugs** only. Please use the [developer mailing list](https://groups.google.com/forum/#!forum/delve-dev) for any feature proposals and discussions.
 
 ### About Delve
 
@@ -17,6 +17,7 @@ The Github issue tracker is for **bugs** only. Please use the [developer mailing
   - [Command line options](Documentation/usage/dlv.md)
   - [Command line client](Documentation/cli/README.md)
   - [Plugins and GUIs](Documentation/EditorIntegration.md)
+  - [Frequently Asked Questions](Documentation/faq.md)
 - [Contributing](CONTRIBUTING.md)
   - [Internal Documentation](Documentation/internal)
   - [API documentation](Documentation/api)

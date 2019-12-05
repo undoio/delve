@@ -233,7 +233,7 @@ func (dbp *Process) updateThreadList() error {
 			return err
 		}
 	}
-	return nil
+	return linutil.ElfUpdateSharedObjects(dbp)
 }
 
 func findExecutable(path string, pid int) string {
@@ -317,19 +317,16 @@ func (dbp *Process) trapWaitInternal(pid int, halt bool) (*Thread, error) {
 			th.os.running = false
 			return th, nil
 		}
-		if th != nil {
-			// TODO(dp) alert user about unexpected signals here.
-			if err := th.resumeWithSig(int(status.StopSignal())); err != nil {
-				if err == sys.ESRCH {
-					return nil, proc.ErrProcessExited{Pid: dbp.pid}
-				}
-				return nil, err
+
+		// TODO(dp) alert user about unexpected signals here.
+		if err := th.resumeWithSig(int(status.StopSignal())); err != nil {
+			if err == sys.ESRCH {
+				dbp.postExit()
+				return nil, proc.ErrProcessExited{Pid: dbp.pid}
 			}
+			return nil, err
 		}
 	}
-}
-
-func (dbp *Process) loadProcessInformation() {
 }
 
 func status(pid int, comm string) rune {
@@ -422,7 +419,7 @@ func (dbp *Process) resume() error {
 	return nil
 }
 
-// stop stops all running threads threads and sets breakpoints
+// stop stops all running threads and sets breakpoints
 func (dbp *Process) stop(trapthread *Thread) (err error) {
 	if dbp.exited {
 		return &proc.ErrProcessExited{Pid: dbp.Pid()}
@@ -453,10 +450,14 @@ func (dbp *Process) stop(trapthread *Thread) (err error) {
 		}
 	}
 
+	if err := linutil.ElfUpdateSharedObjects(dbp); err != nil {
+		return err
+	}
+
 	// set breakpoints on all threads
 	for _, th := range dbp.threads {
 		if th.CurrentBreakpoint.Breakpoint == nil {
-			if err := th.SetCurrentBreakpoint(); err != nil {
+			if err := th.SetCurrentBreakpoint(true); err != nil {
 				return err
 			}
 		}

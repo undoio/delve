@@ -15,20 +15,16 @@ type Arch interface {
 	BreakpointInstruction() []byte
 	BreakpointSize() int
 	DerefTLS() bool
-	FixFrameUnwindContext(fctxt *frame.FrameContext, pc uint64, bi *BinaryInfo) *frame.FrameContext
+	FixFrameUnwindContext(*frame.FrameContext, uint64, *BinaryInfo) *frame.FrameContext
 	RegSize(uint64) int
-	RegistersToDwarfRegisters(regs Registers, staticBase uint64) op.DwarfRegisters
-	GoroutineToDwarfRegisters(*G) op.DwarfRegisters
+	RegistersToDwarfRegisters(uint64, Registers) op.DwarfRegisters
+	AddrAndStackRegsToDwarfRegisters(uint64, uint64, uint64, uint64) op.DwarfRegisters
 }
 
 // AMD64 represents the AMD64 CPU architecture.
 type AMD64 struct {
-	ptrSize                 int
-	breakInstruction        []byte
-	breakInstructionLen     int
-	gStructOffset           uint64
-	hardwareBreakpointUsage []bool
-	goos                    string
+	gStructOffset uint64
+	goos          string
 
 	// crosscall2fn is the DIE of crosscall2, a function used by the go runtime
 	// to call C functions. This function in go 1.9 (and previous versions) had
@@ -48,36 +44,32 @@ const (
 	amd64DwarfBPRegNum uint64 = 6
 )
 
+var amd64BreakInstruction = []byte{0xCC}
+
 // AMD64Arch returns an initialized AMD64
 // struct.
 func AMD64Arch(goos string) *AMD64 {
-	var breakInstr = []byte{0xCC}
-
 	return &AMD64{
-		ptrSize:                 8,
-		breakInstruction:        breakInstr,
-		breakInstructionLen:     len(breakInstr),
-		hardwareBreakpointUsage: make([]bool, 4),
-		goos:                    goos,
+		goos: goos,
 	}
 }
 
 // PtrSize returns the size of a pointer
 // on this architecture.
 func (a *AMD64) PtrSize() int {
-	return a.ptrSize
+	return 8
 }
 
 // BreakpointInstruction returns the Breakpoint
 // instruction for this architecture.
 func (a *AMD64) BreakpointInstruction() []byte {
-	return a.breakInstruction
+	return amd64BreakInstruction
 }
 
 // BreakpointSize returns the size of the
 // breakpoint instruction on this architecture.
 func (a *AMD64) BreakpointSize() int {
-	return a.breakInstructionLen
+	return len(amd64BreakInstruction)
 }
 
 // DerefTLS returns true if the value of regs.TLS()+GStructOffset() is a
@@ -100,7 +92,6 @@ func (a *AMD64) FixFrameUnwindContext(fctxt *frame.FrameContext, pc uint64, bi *
 	}
 
 	if fctxt == nil || (a.sigreturnfn != nil && pc >= a.sigreturnfn.Entry && pc < a.sigreturnfn.End) {
-		//if true {
 		// When there's no frame descriptor entry use BP (the frame pointer) instead
 		// - return register is [bp + a.PtrSize()] (i.e. [cfa-a.PtrSize()])
 		// - cfa is bp + a.PtrSize()*2
@@ -270,7 +261,7 @@ func maxAmd64DwarfRegister() int {
 
 // RegistersToDwarfRegisters converts hardware registers to the format used
 // by the DWARF expression interpreter.
-func (a *AMD64) RegistersToDwarfRegisters(regs Registers, staticBase uint64) op.DwarfRegisters {
+func (a *AMD64) RegistersToDwarfRegisters(staticBase uint64, regs Registers) op.DwarfRegisters {
 	dregs := make([]*op.DwarfRegister, maxAmd64DwarfRegister()+1)
 
 	dregs[amd64DwarfIPRegNum] = op.DwarfRegisterFromUint64(regs.PC())
@@ -284,7 +275,7 @@ func (a *AMD64) RegistersToDwarfRegisters(regs Registers, staticBase uint64) op.
 		}
 	}
 
-	for _, reg := range regs.Slice() {
+	for _, reg := range regs.Slice(true) {
 		for dwarfReg, regName := range amd64DwarfToName {
 			if regName == reg.Name {
 				dregs[dwarfReg] = op.DwarfRegisterFromBytes(reg.Bytes)
@@ -292,15 +283,30 @@ func (a *AMD64) RegistersToDwarfRegisters(regs Registers, staticBase uint64) op.
 		}
 	}
 
-	return op.DwarfRegisters{StaticBase: staticBase, Regs: dregs, ByteOrder: binary.LittleEndian, PCRegNum: amd64DwarfIPRegNum, SPRegNum: amd64DwarfSPRegNum, BPRegNum: amd64DwarfBPRegNum}
+	return op.DwarfRegisters{
+		StaticBase: staticBase,
+		Regs:       dregs,
+		ByteOrder:  binary.LittleEndian,
+		PCRegNum:   amd64DwarfIPRegNum,
+		SPRegNum:   amd64DwarfSPRegNum,
+		BPRegNum:   amd64DwarfBPRegNum,
+	}
 }
 
-// GoroutineToDwarfRegisters extract the saved DWARF registers from a parked
-// goroutine in the format used by the DWARF expression interpreter.
-func (a *AMD64) GoroutineToDwarfRegisters(g *G) op.DwarfRegisters {
+// AddrAndStackRegsToDwarfRegisters returns DWARF registers from the passed in
+// PC, SP, and BP registers in the format used by the DWARF expression interpreter.
+func (a *AMD64) AddrAndStackRegsToDwarfRegisters(staticBase, pc, sp, bp uint64) op.DwarfRegisters {
 	dregs := make([]*op.DwarfRegister, amd64DwarfIPRegNum+1)
-	dregs[amd64DwarfIPRegNum] = op.DwarfRegisterFromUint64(g.PC)
-	dregs[amd64DwarfSPRegNum] = op.DwarfRegisterFromUint64(g.SP)
-	dregs[amd64DwarfBPRegNum] = op.DwarfRegisterFromUint64(g.BP)
-	return op.DwarfRegisters{StaticBase: g.variable.bi.staticBase, Regs: dregs, ByteOrder: binary.LittleEndian, PCRegNum: amd64DwarfIPRegNum, SPRegNum: amd64DwarfSPRegNum, BPRegNum: amd64DwarfBPRegNum}
+	dregs[amd64DwarfIPRegNum] = op.DwarfRegisterFromUint64(pc)
+	dregs[amd64DwarfSPRegNum] = op.DwarfRegisterFromUint64(sp)
+	dregs[amd64DwarfBPRegNum] = op.DwarfRegisterFromUint64(bp)
+
+	return op.DwarfRegisters{
+		StaticBase: staticBase,
+		Regs:       dregs,
+		ByteOrder:  binary.LittleEndian,
+		PCRegNum:   amd64DwarfIPRegNum,
+		SPRegNum:   amd64DwarfSPRegNum,
+		BPRegNum:   amd64DwarfBPRegNum,
+	}
 }

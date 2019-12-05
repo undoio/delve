@@ -8,7 +8,6 @@ import (
 	"go/token"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 // ErrNotExecutable is returned after attempting to execute a non-executable file
@@ -19,8 +18,16 @@ var ErrNotExecutable = errors.New("not an executable file")
 // only possible on recorded (traced) programs.
 var ErrNotRecorded = errors.New("not a recording")
 
-// UnrecoveredPanic is the name given to the unrecovered panic breakpoint.
-const UnrecoveredPanic = "unrecovered-panic"
+const (
+	// UnrecoveredPanic is the name given to the unrecovered panic breakpoint.
+	UnrecoveredPanic = "unrecovered-panic"
+
+	// FatalThrow is the name given to the breakpoint triggered when the target process dies because of a fatal runtime error
+	FatalThrow = "runtime-fatal-throw"
+
+	unrecoveredPanicID = -1
+	fatalThrowID       = -2
+)
 
 // ErrProcessExited indicates that the process has exited and contains both
 // process id and exit status.
@@ -50,17 +57,20 @@ func PostInitializationSetup(p Process, path string, debugInfoDirs []string, wri
 	}
 
 	err = p.BinInfo().LoadBinaryInfo(path, entryPoint, debugInfoDirs)
-	if err == nil {
-		err = p.BinInfo().LoadError()
-	}
 	if err != nil {
 		return err
+	}
+	for _, image := range p.BinInfo().Images {
+		if image.loadErr != nil {
+			return image.loadErr
+		}
 	}
 
 	g, _ := GetG(p.CurrentThread())
 	p.SetSelectedGoroutine(g)
 
 	createUnrecoveredPanicBreakpoint(p, writeBreakpoint)
+	createFatalThrowBreakpoint(p, writeBreakpoint)
 
 	return nil
 }
@@ -89,54 +99,20 @@ func (err *ErrFunctionNotFound) Error() string {
 }
 
 // FindFunctionLocation finds address of a function's line
-// If firstLine == true is passed FindFunctionLocation will attempt to find the first line of the function
 // If lineOffset is passed FindFunctionLocation will return the address of that line
-// Pass lineOffset == 0 and firstLine == false if you want the address for the function's entry point
-// Note that setting breakpoints at that address will cause surprising behavior:
-// https://github.com/go-delve/delve/issues/170
-func FindFunctionLocation(p Process, funcName string, firstLine bool, lineOffset int) (uint64, error) {
+func FindFunctionLocation(p Process, funcName string, lineOffset int) (uint64, error) {
 	bi := p.BinInfo()
 	origfn := bi.LookupFunc[funcName]
 	if origfn == nil {
 		return 0, &ErrFunctionNotFound{funcName}
 	}
 
-	if firstLine {
+	if lineOffset <= 0 {
 		return FirstPCAfterPrologue(p, origfn, false)
-	} else if lineOffset > 0 {
-		filename, lineno := origfn.cu.lineInfo.PCToLine(origfn.Entry, origfn.Entry)
-		breakAddr, _, err := bi.LineToPC(filename, lineno+lineOffset)
-		return breakAddr, err
 	}
-
-	return origfn.Entry, nil
-}
-
-// FunctionReturnLocations will return a list of addresses corresponding
-// to 'ret' or 'call runtime.deferreturn'.
-func FunctionReturnLocations(p Process, funcName string) ([]uint64, error) {
-	const deferReturn = "runtime.deferreturn"
-
-	g := p.SelectedGoroutine()
-	fn, ok := p.BinInfo().LookupFunc[funcName]
-	if !ok {
-		return nil, fmt.Errorf("unable to find function %s", funcName)
-	}
-
-	instructions, err := Disassemble(p, g, fn.Entry, fn.End)
-	if err != nil {
-		return nil, err
-	}
-
-	var addrs []uint64
-	for _, instruction := range instructions {
-		if instruction.IsRet() {
-			addrs = append(addrs, instruction.Loc.PC)
-		}
-	}
-	addrs = append(addrs, findDeferReturnCalls(instructions)...)
-
-	return addrs, nil
+	filename, lineno := origfn.cu.lineInfo.PCToLine(origfn.Entry, origfn.Entry)
+	breakAddr, _, err := bi.LineToPC(filename, lineno+lineOffset)
+	return breakAddr, err
 }
 
 // Next continues execution until the next source line.
@@ -186,6 +162,11 @@ func Continue(dbp Process) error {
 
 		threads := dbp.ThreadList()
 
+		callInjectionDone, err := callInjectionProtocol(dbp, threads)
+		if err != nil {
+			return err
+		}
+
 		if err := pickCurrentThread(dbp, trapthread, threads); err != nil {
 			return err
 		}
@@ -205,6 +186,7 @@ func Continue(dbp Process) error {
 			if err != nil || loc.Fn == nil {
 				return conditionErrors(threads)
 			}
+			g, _ := GetG(curthread)
 
 			switch {
 			case loc.Fn.Name == "runtime.breakpoint":
@@ -216,22 +198,8 @@ func Continue(dbp Process) error {
 					return err
 				}
 				return conditionErrors(threads)
-			case strings.HasPrefix(loc.Fn.Name, debugCallFunctionNamePrefix1) || strings.HasPrefix(loc.Fn.Name, debugCallFunctionNamePrefix2):
-				fncall := &dbp.Common().fncallState
-				if !fncall.inProgress {
-					return conditionErrors(threads)
-				}
-				fncall.step(dbp)
-				// only stop execution if the function call finished
-				if fncall.finished {
-					fncall.inProgress = false
-					if fncall.err != nil {
-						return fncall.err
-					}
-					curthread.Common().returnValues = fncall.returnValues()
-					return conditionErrors(threads)
-				}
-			default:
+			case g == nil || dbp.Common().fncallForG[g.ID] == nil:
+				// a hardcoded breakpoint somewhere else in the code (probably cgo)
 				return conditionErrors(threads)
 			}
 		case curbp.Active && curbp.Internal:
@@ -280,6 +248,11 @@ func Continue(dbp Process) error {
 			return conditionErrors(threads)
 		default:
 			// not a manual stop, not on runtime.Breakpoint, not on a breakpoint, just repeat
+		}
+		if callInjectionDone {
+			// a call injection was finished, don't let a breakpoint with a failed
+			// condition or a step breakpoint shadow this.
+			return conditionErrors(threads)
 		}
 	}
 }
@@ -330,10 +303,12 @@ func stepInstructionOut(dbp Process, curthread Thread, fnname1, fnname2 string) 
 		}
 		loc, err := curthread.Location()
 		if err != nil || loc.Fn == nil || (loc.Fn.Name != fnname1 && loc.Fn.Name != fnname2) {
-			if g := dbp.SelectedGoroutine(); g != nil {
-				g.CurrentLoc = *loc
+			g, _ := GetG(curthread)
+			selg := dbp.SelectedGoroutine()
+			if g != nil && selg != nil && g.ID == selg.ID {
+				selg.CurrentLoc = *loc
 			}
-			return curthread.SetCurrentBreakpoint()
+			return curthread.SetCurrentBreakpoint(true)
 		}
 	}
 }
@@ -481,7 +456,7 @@ func StepOut(dbp Process) error {
 	}
 
 	if bp := curthread.Breakpoint(); bp.Breakpoint == nil {
-		curthread.SetCurrentBreakpoint()
+		curthread.SetCurrentBreakpoint(false)
 	}
 
 	success = true
@@ -506,10 +481,12 @@ func GoroutinesInfo(dbp Process, start, count int) ([]*G, int, error) {
 		}
 	}
 
+	exeimage := dbp.BinInfo().Images[0] // Image corresponding to the executable file
+
 	var (
 		threadg = map[int]*G{}
 		allg    []*G
-		rdr     = dbp.BinInfo().DwarfReader()
+		rdr     = exeimage.DwarfReader()
 	)
 
 	threads := dbp.ThreadList()
@@ -523,7 +500,7 @@ func GoroutinesInfo(dbp Process, start, count int) ([]*G, int, error) {
 		}
 	}
 
-	addr, err := rdr.AddrFor("runtime.allglen", dbp.BinInfo().staticBase)
+	addr, err := rdr.AddrFor("runtime.allglen", exeimage.StaticBase)
 	if err != nil {
 		return nil, -1, err
 	}
@@ -535,10 +512,10 @@ func GoroutinesInfo(dbp Process, start, count int) ([]*G, int, error) {
 	allglen := binary.LittleEndian.Uint64(allglenBytes)
 
 	rdr.Seek(0)
-	allgentryaddr, err := rdr.AddrFor("runtime.allgs", dbp.BinInfo().staticBase)
+	allgentryaddr, err := rdr.AddrFor("runtime.allgs", exeimage.StaticBase)
 	if err != nil {
 		// try old name (pre Go 1.6)
-		allgentryaddr, err = rdr.AddrFor("runtime.allg", dbp.BinInfo().staticBase)
+		allgentryaddr, err = rdr.AddrFor("runtime.allg", exeimage.StaticBase)
 		if err != nil {
 			return nil, -1, err
 		}
@@ -588,22 +565,30 @@ func GoroutinesInfo(dbp Process, start, count int) ([]*G, int, error) {
 // FindGoroutine returns a G struct representing the goroutine
 // specified by `gid`.
 func FindGoroutine(dbp Process, gid int) (*G, error) {
-	if gid == -1 {
-		return dbp.SelectedGoroutine(), nil
+	if selg := dbp.SelectedGoroutine(); (gid == -1) || (selg != nil && selg.ID == gid) || (selg == nil && gid == 0) {
+		// Return the currently selected goroutine in the following circumstances:
+		//
+		// 1. if the caller asks for gid == -1 (because that's what a goroutine ID of -1 means in our API).
+		// 2. if gid == selg.ID.
+		//    this serves two purposes: (a) it's an optimizations that allows us
+		//    to avoid reading any other goroutine and, more importantly, (b) we
+		//    could be reading an incorrect value for the goroutine ID of a thread.
+		//    This condition usually happens when a goroutine calls runtime.clone
+		//    and for a short period of time two threads will appear to be running
+		//    the same goroutine.
+		// 3. if the caller asks for gid == 0 and the selected goroutine is
+		//    either 0 or nil.
+		//    Goroutine 0 is special, it either means we have no current goroutine
+		//    (for example, running C code), or that we are running on a speical
+		//    stack (system stack, signal handling stack) and we didn't properly
+		//    detect it.
+		//    Since there could be multiple goroutines '0' running simultaneously
+		//    if the user requests it return the one that's already selected or
+		//    nil if there isn't a selected goroutine.
+		return selg, nil
 	}
 
 	if gid == 0 {
-		// goroutine 0 is special, it either means we have no current goroutine
-		// (for example, running C code), or that we are running on a special
-		// stack (system stack, signal handling stack) and we didn't properly
-		// detect.
-		// If the user requested goroutine 0 and we the current thread is running
-		// on a goroutine 0 (or no goroutine at all) return the goroutine running
-		// on the current thread.
-		g, _ := GetG(dbp.CurrentThread())
-		if g == nil || g.ID == 0 {
-			return g, nil
-		}
 		return nil, fmt.Errorf("Unknown goroutine %d", gid)
 	}
 
@@ -661,7 +646,12 @@ func ConvertEvalScope(dbp Process, gid, frame, deferCall int) (*EvalScope, error
 		thread = g.Thread
 	}
 
-	locs, err := g.Stacktrace(frame+1, deferCall > 0)
+	var opts StacktraceOptions
+	if deferCall > 0 {
+		opts = StacktraceReadDefers
+	}
+
+	locs, err := g.Stacktrace(frame+1, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -692,11 +682,6 @@ func ConvertEvalScope(dbp Process, gid, frame, deferCall int) (*EvalScope, error
 // Otherwise all memory between frames[0].Regs.SP() and frames[0].Regs.CFA
 // will be cached.
 func FrameToScope(bi *BinaryInfo, thread MemoryReadWriter, g *G, frames ...Stackframe) *EvalScope {
-	var gvar *Variable
-	if g != nil {
-		gvar = g.variable
-	}
-
 	// Creates a cacheMem that will preload the entire stack frame the first
 	// time any local variable is read.
 	// Remember that the stack grows downward in memory.
@@ -711,7 +696,7 @@ func FrameToScope(bi *BinaryInfo, thread MemoryReadWriter, g *G, frames ...Stack
 		thread = cacheMemory(thread, uintptr(minaddr), int(maxaddr-minaddr))
 	}
 
-	s := &EvalScope{Location: frames[0].Call, Regs: frames[0].Regs, Mem: thread, Gvar: gvar, BinInfo: bi, frameOffset: frames[0].FrameOffset()}
+	s := &EvalScope{Location: frames[0].Call, Regs: frames[0].Regs, Mem: thread, g: g, BinInfo: bi, frameOffset: frames[0].FrameOffset()}
 	s.PC = frames[0].lastpc
 	return s
 }
@@ -719,18 +704,27 @@ func FrameToScope(bi *BinaryInfo, thread MemoryReadWriter, g *G, frames ...Stack
 // createUnrecoveredPanicBreakpoint creates the unrecoverable-panic breakpoint.
 // This function is meant to be called by implementations of the Process interface.
 func createUnrecoveredPanicBreakpoint(p Process, writeBreakpoint WriteBreakpointFn) {
-	panicpc, err := FindFunctionLocation(p, "runtime.startpanic", true, 0)
+	panicpc, err := FindFunctionLocation(p, "runtime.startpanic", 0)
 	if _, isFnNotFound := err.(*ErrFunctionNotFound); isFnNotFound {
-		panicpc, err = FindFunctionLocation(p, "runtime.fatalpanic", true, 0)
+		panicpc, err = FindFunctionLocation(p, "runtime.fatalpanic", 0)
 	}
 	if err == nil {
-		bp, err := p.Breakpoints().SetWithID(-1, panicpc, writeBreakpoint)
+		bp, err := p.Breakpoints().SetWithID(unrecoveredPanicID, panicpc, writeBreakpoint)
 		if err == nil {
 			bp.Name = UnrecoveredPanic
 			bp.Variables = []string{"runtime.curg._panic.arg"}
 		}
 	}
+}
 
+func createFatalThrowBreakpoint(p Process, writeBreakpoint WriteBreakpointFn) {
+	fatalpc, err := FindFunctionLocation(p, "runtime.fatalthrow", 0)
+	if err == nil {
+		bp, err := p.Breakpoints().SetWithID(fatalThrowID, fatalpc, writeBreakpoint)
+		if err == nil {
+			bp.Name = FatalThrow
+		}
+	}
 }
 
 // FirstPCAfterPrologue returns the address of the first

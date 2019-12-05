@@ -51,7 +51,7 @@ type AMD64PtraceRegs struct {
 }
 
 // Slice returns the registers as a list of (name, value) pairs.
-func (r *AMD64Registers) Slice() []proc.Register {
+func (r *AMD64Registers) Slice(floatingPoint bool) []proc.Register {
 	var regs = []struct {
 		k string
 		v uint64
@@ -92,7 +92,9 @@ func (r *AMD64Registers) Slice() []proc.Register {
 			out = proc.AppendQwordReg(out, reg.k, reg.v)
 		}
 	}
-	out = append(out, r.Fpregs...)
+	if floatingPoint {
+		out = append(out, r.Fpregs...)
+	}
 	return out
 }
 
@@ -130,9 +132,9 @@ func (r *AMD64Registers) GAddr() (uint64, bool) {
 func (r *AMD64Registers) Get(n int) (uint64, error) {
 	reg := x86asm.Reg(n)
 	const (
-		mask8  = 0x000f
-		mask16 = 0x00ff
-		mask32 = 0xffff
+		mask8  = 0x000000ff
+		mask16 = 0x0000ffff
+		mask32 = 0xffffffff
 	)
 
 	switch reg {

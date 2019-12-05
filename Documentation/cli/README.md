@@ -24,6 +24,7 @@ Command | Description
 [goroutine](#goroutine) | Shows or changes current goroutine
 [goroutines](#goroutines) | List program goroutines.
 [help](#help) | Prints the help message.
+[libraries](#libraries) | List loaded dynamic libraries
 [list](#list) | Show source code.
 [locals](#locals) | Print local variables.
 [next](#next) | Step over to next source line.
@@ -31,6 +32,7 @@ Command | Description
 [print](#print) | Evaluate an expression.
 [regs](#regs) | Print contents of CPU registers.
 [restart](#restart) | Restart process from a checkpoint or event.
+[rev](#rev) | Reverses the execution of the target program for the command specified.
 [rewind](#rewind) | Run backwards until breakpoint or start of recorded history.
 [set](#set) | Changes the value of a variable.
 [source](#source) | Executes a file containing a list of delve commands
@@ -240,6 +242,7 @@ Called without arguments it will show information about the current goroutine.
 Called with a single argument it will switch to the specified goroutine.
 Called with more arguments it will execute a command on the specified goroutine.
 
+Aliases: gr
 
 ## goroutines
 List program goroutines.
@@ -256,6 +259,7 @@ Print out info for every goroutine. The flag controls what information is shown 
 
 If no flag is specified the default is -u.
 
+Aliases: grs
 
 ## help
 Prints the help message.
@@ -265,6 +269,10 @@ Prints the help message.
 Type "help" followed by the name of a command for more information about it.
 
 Aliases: h
+
+## libraries
+List loaded dynamic libraries
+
 
 ## list
 Show source code.
@@ -287,6 +295,11 @@ If regex is specified only local variables with a name matching it will be retur
 
 ## next
 Step over to next source line.
+
+	 next [count]
+
+Optional [count] argument allows you to skip multiple lines.
+
 
 Aliases: n
 
@@ -322,6 +335,11 @@ Restart process from a checkpoint or event.
 
 Aliases: r
 
+## rev
+Reverses the execution of the target program for the command specified.
+Currently, only the rev step-instruction command is supported.
+
+
 ## rewind
 Run backwards until breakpoint or start of recorded history.
 
@@ -339,6 +357,10 @@ See [Documentation/cli/expr.md](//github.com/undoio/delve/tree/master/Documentat
 Executes a file containing a list of delve commands
 
 	source <path>
+	
+If path ends with the .star extension it will be interpreted as a starlark script. See [Documentation/cli/starlark.md](//github.com/undoio/delve/tree/master/Documentation/cli/starlark.md) for the syntax.
+
+If path is a single '-' character an interactive starlark interpreter will start instead. Type 'exit' to exit.
 
 
 ## sources
@@ -352,11 +374,17 @@ If regex is specified only the source files matching it will be returned.
 ## stack
 Print stack trace.
 
-	[goroutine <n>] [frame <m>] stack [<depth>] [-full] [-offsets] [-defer]
+	[goroutine <n>] [frame <m>] stack [<depth>] [-full] [-offsets] [-defer] [-a <n>] [-adepth <depth>] [-mode <mode>]
 
 	-full		every stackframe is decorated with the value of its local variables and arguments.
 	-offsets	prints frame offset of each frame.
 	-defer		prints deferred function call stack for each frame.
+	-a <n>		prints stacktrace of n ancestors of the selected goroutine (target process must have tracebackancestors enabled)
+	-adepth <depth>	configures depth of ancestor stacktrace
+	-mode <mode>	specifies the stacktrace mode, possible values are:
+			normal	- attempts to automatically switch between cgo frames and go frames
+			simple	- disables automatic switch between cgo and go
+			fromg	- starts from the registers stored in the runtime.g struct
 
 
 Aliases: bt
@@ -374,6 +402,7 @@ Aliases: si
 ## stepout
 Step out of the current function.
 
+Aliases: so
 
 ## thread
 Switch to the specified thread.

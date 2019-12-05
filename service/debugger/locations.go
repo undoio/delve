@@ -3,6 +3,7 @@ package debugger
 import (
 	"fmt"
 	"go/constant"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -71,7 +72,7 @@ func parseLocationSpec(locStr string) (LocationSpec, error) {
 	case '/':
 		if rest[len(rest)-1] == '/' {
 			rx, rest := readRegex(rest[1:])
-			if len(rest) < 0 {
+			if len(rest) == 0 {
 				return nil, malformed("non-terminated regular expression")
 			}
 			if len(rest) > 1 {
@@ -249,7 +250,7 @@ func (loc *RegexLocationSpec) Find(d *Debugger, scope *proc.EvalScope, locStr st
 	}
 	r := make([]api.Location, 0, len(matches))
 	for i := range matches {
-		addr, err := proc.FindFunctionLocation(d.target, matches[i], true, 0)
+		addr, err := proc.FindFunctionLocation(d.target, matches[i], 0)
 		if err == nil {
 			r = append(r, api.Location{PC: addr})
 		}
@@ -293,6 +294,10 @@ func (loc *NormalLocationSpec) FileMatch(path string) bool {
 	return partialPathMatch(loc.Base, path)
 }
 
+func tryMatchRelativePathByProc(expr, debugname, file string) bool {
+	return len(expr) > 0 && expr[0] == '.' && file == path.Join(path.Dir(debugname), expr)
+}
+
 func partialPathMatch(expr, path string) bool {
 	if runtime.GOOS == "windows" {
 		// Accept `expr` which is case-insensitive and slash-insensitive match to `path`
@@ -329,7 +334,7 @@ func (loc *NormalLocationSpec) Find(d *Debugger, scope *proc.EvalScope, locStr s
 	limit := maxFindLocationCandidates
 	var candidateFiles []string
 	for _, file := range d.target.BinInfo().Sources {
-		if loc.FileMatch(file) {
+		if loc.FileMatch(file) || (len(d.processArgs) >= 1 && tryMatchRelativePathByProc(loc.Base, d.processArgs[0], file)) {
 			candidateFiles = append(candidateFiles, file)
 			if len(candidateFiles) >= limit {
 				break
@@ -380,11 +385,7 @@ func (loc *NormalLocationSpec) Find(d *Debugger, scope *proc.EvalScope, locStr s
 		}
 		addr, err = proc.FindFileLocation(d.target, candidateFiles[0], loc.LineOffset)
 	} else { // len(candidateFUncs) == 1
-		if loc.LineOffset < 0 {
-			addr, err = proc.FindFunctionLocation(d.target, candidateFuncs[0], true, 0)
-		} else {
-			addr, err = proc.FindFunctionLocation(d.target, candidateFuncs[0], false, loc.LineOffset)
-		}
+		addr, err = proc.FindFunctionLocation(d.target, candidateFuncs[0], loc.LineOffset)
 	}
 
 	if err != nil {

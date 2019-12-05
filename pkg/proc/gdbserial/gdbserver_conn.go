@@ -229,7 +229,8 @@ type gdbRegisterInfo struct {
 	Name    string `xml:"name,attr"`
 	Bitsize int    `xml:"bitsize,attr"`
 	Offset  int
-	Regnum  int `xml:"regnum,attr"`
+	Regnum  int    `xml:"regnum,attr"`
+	Group   string `xml:"group,attr"`
 }
 
 // readTargetXml reads target.xml file from stub using qXfer:features:read,
@@ -578,43 +579,78 @@ func (conn *gdbConn) resume(sig uint8, tu *threadUpdater) (string, uint8, error)
 }
 
 // step executes a 'vCont' command on the specified thread with 's' action.
-func (conn *gdbConn) step(threadID string, tu *threadUpdater) (string, uint8, error) {
-	if conn.direction == proc.Forward {
-		if !conn.isUndoServer {
-			conn.outbuf.Reset()
-			fmt.Fprintf(&conn.outbuf, "$vCont;s:%s", threadID)
-		} else {
-			conn.outbuf.Reset()
+func (conn *gdbConn) step(threadID string, tu *threadUpdater, ignoreFaultSignal bool) error {
+	if conn.direction != proc.Forward {
+		if err := conn.selectThread('c', threadID, "step"); err != nil {
+			return err
+		}
+		conn.outbuf.Reset()
+		fmt.Fprint(&conn.outbuf, "$bs")
+		if err := conn.send(conn.outbuf.Bytes()); err != nil {
+			return err
+		}
+		_, _, err := conn.waitForvContStop("singlestep", threadID, tu)
+		return err
+	}
+	var sig uint8 = 0
+	for {
+		conn.outbuf.Reset()
+		if conn.isUndoServer {
+			// The undo backend does not yet support vCont so we
+			// have to take a two-command approach.
 			fmt.Fprintf(&conn.outbuf, "$Hc%s", threadID)
-
 			if err := conn.send(conn.outbuf.Bytes()); err != nil {
-				return "", 0, err
+				return err
 			}
-
 			resp, err := conn.recv(nil, "singlestep", false)
 			if err != nil {
-				return "", 0, err
+				return err
 			}
-
 			if strings.Compare(string(resp), "OK") != 0 {
-				return "", 0, fmt.Errorf("Failed to set thread ID %s: %s",
+				return fmt.Errorf("Failed to set thread ID %s: %s",
 					threadID, string(resp))
 			}
 
 			conn.outbuf.Reset()
-			fmt.Fprintf(&conn.outbuf, "$s")
+			if sig == 0 {
+				fmt.Fprintf(&conn.outbuf, "$s")
+			} else {
+				fmt.Fprintf(&conn.outbuf, "$s%02x", sig)
+			}
+		} else {
+			if sig == 0 {
+				fmt.Fprintf(&conn.outbuf, "$vCont;s:%s", threadID)
+			} else {
+				fmt.Fprintf(&conn.outbuf, "$vCont;S%02x:%s", sig, threadID)
+			}
 		}
-	} else {
-		if err := conn.selectThread('c', threadID, "step"); err != nil {
-			return "", 0, err
+		if err := conn.send(conn.outbuf.Bytes()); err != nil {
+			return err
 		}
-		conn.outbuf.Reset()
-		fmt.Fprint(&conn.outbuf, "$bs")
+		if tu != nil {
+			tu.Reset()
+		}
+		var err error
+		_, sig, err = conn.waitForvContStop("singlestep", threadID, tu)
+		if err != nil {
+			return err
+		}
+		switch sig {
+		case faultSignal:
+			if ignoreFaultSignal { // we attempting to read the TLS, a fault here should be ignored
+				return nil
+			}
+		case interruptSignal, breakpointSignal, stopSignal:
+			return nil
+		case childSignal: // stop on debugserver but SIGCHLD on lldb-server/linux
+			if conn.isDebugserver {
+				return nil
+			}
+		case debugServerTargetExcBadAccess, debugServerTargetExcBadInstruction, debugServerTargetExcArithmetic, debugServerTargetExcEmulation, debugServerTargetExcSoftware, debugServerTargetExcBreakpoint:
+			return nil
+		}
+		// any other signal is propagated to the inferior
 	}
-	if err := conn.send(conn.outbuf.Bytes()); err != nil {
-		return "", 0, err
-	}
-	return conn.waitForvContStop("singlestep", threadID, tu)
 }
 
 var threadBlockedError = errors.New("thread blocked")

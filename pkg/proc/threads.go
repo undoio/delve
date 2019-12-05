@@ -38,8 +38,8 @@ type Thread interface {
 	StepInstruction() error
 	// Blocked returns true if the thread is blocked
 	Blocked() bool
-	// SetCurrentBreakpoint updates the current breakpoint of this thread
-	SetCurrentBreakpoint() error
+	// SetCurrentBreakpoint updates the current breakpoint of this thread, if adjustPC is true also checks for breakpoints that were just hit (this should only be passed true after a thread resume)
+	SetCurrentBreakpoint(adjustPC bool) error
 	// Common returns the CommonThread structure for this thread
 	Common() *CommonThread
 
@@ -90,7 +90,7 @@ func topframe(g *G, thread Thread) (Stackframe, Stackframe, error) {
 		}
 		frames, err = ThreadStacktrace(thread, 1)
 	} else {
-		frames, err = g.Stacktrace(1, true)
+		frames, err = g.Stacktrace(1, StacktraceReadDefers)
 	}
 	if err != nil {
 		return Stackframe{}, Stackframe{}, err
@@ -225,7 +225,7 @@ func next(dbp Process, stepInto, inlinedStepOut bool) error {
 	}
 
 	if !csource {
-		deferreturns := findDeferReturnCalls(text)
+		deferreturns := FindDeferReturnCalls(text)
 
 		// Set breakpoint on the most recently deferred function (if any)
 		var deferpc uint64
@@ -319,13 +319,13 @@ func next(dbp Process, stepInto, inlinedStepOut bool) error {
 	}
 
 	if bp := curthread.Breakpoint(); bp.Breakpoint == nil {
-		curthread.SetCurrentBreakpoint()
+		curthread.SetCurrentBreakpoint(false)
 	}
 	success = true
 	return nil
 }
 
-func findDeferReturnCalls(text []AsmInstruction) []uint64 {
+func FindDeferReturnCalls(text []AsmInstruction) []uint64 {
 	const deferreturn = "runtime.deferreturn"
 	deferreturns := []uint64{}
 
@@ -343,19 +343,20 @@ func findDeferReturnCalls(text []AsmInstruction) []uint64 {
 // If includeCurrentFn is true it will also remove all instructions
 // belonging to the current function.
 func removeInlinedCalls(dbp Process, pcs []uint64, topframe Stackframe) ([]uint64, error) {
-	bi := dbp.BinInfo()
-	irdr := reader.InlineStack(bi.dwarf, topframe.Call.Fn.offset, 0)
+	image := topframe.Call.Fn.cu.image
+	dwarf := image.dwarf
+	irdr := reader.InlineStack(dwarf, topframe.Call.Fn.offset, 0)
 	for irdr.Next() {
 		e := irdr.Entry()
 		if e.Offset == topframe.Call.Fn.offset {
 			continue
 		}
-		ranges, err := bi.dwarf.Ranges(e)
+		ranges, err := dwarf.Ranges(e)
 		if err != nil {
 			return pcs, err
 		}
 		for _, rng := range ranges {
-			pcs = removePCsBetween(pcs, rng[0], rng[1], bi.staticBase)
+			pcs = removePCsBetween(pcs, rng[0], rng[1], image.StaticBase)
 		}
 		irdr.SkipChildren()
 	}
@@ -477,6 +478,10 @@ func newGVariable(thread Thread, gaddr uintptr, deref bool) (*Variable, error) {
 // In order to get around all this craziness, we read the address of the G structure for
 // the current thread from the thread local storage area.
 func GetG(thread Thread) (*G, error) {
+	if loc, _ := thread.Location(); loc != nil && loc.Fn != nil && loc.Fn.Name == "runtime.clone" {
+		// When threads are executing runtime.clone the value of TLS is unreliable.
+		return nil, nil
+	}
 	gaddr, err := getGVariable(thread)
 	if err != nil {
 		return nil, err

@@ -21,7 +21,7 @@ type Client interface {
 	// Restarts program.
 	Restart() ([]api.DiscardedBreakpoint, error)
 	// Restarts program from the specified position.
-	RestartFrom(pos string, resetArgs bool, newArgs []string) ([]api.DiscardedBreakpoint, error)
+	RestartFrom(rerecord bool, pos string, resetArgs bool, newArgs []string) ([]api.DiscardedBreakpoint, error)
 
 	// GetState returns the current debugger state.
 	GetState() (*api.DebuggerState, error)
@@ -39,10 +39,12 @@ type Client interface {
 	// StepOut continues to the return address of the current function
 	StepOut() (*api.DebuggerState, error)
 	// Call resumes process execution while making a function call.
-	Call(expr string, unsafe bool) (*api.DebuggerState, error)
+	Call(goroutineID int, expr string, unsafe bool) (*api.DebuggerState, error)
 
 	// SingleStep will step a single cpu instruction.
 	StepInstruction() (*api.DebuggerState, error)
+	// ReverseSingleStep will reverse step a single cpu instruction.
+	ReverseStepInstruction() (*api.DebuggerState, error)
 	// SwitchThread switches the current thread context.
 	SwitchThread(threadID int) (*api.DebuggerState, error)
 	// SwitchGoroutine switches the current goroutine (and the current thread as well)
@@ -98,7 +100,10 @@ type Client interface {
 	ListGoroutines(start, count int) ([]*api.Goroutine, int, error)
 
 	// Returns stacktrace
-	Stacktrace(goroutineID int, depth int, readDefers bool, cfg *api.LoadConfig) ([]api.Stackframe, error)
+	Stacktrace(goroutineID int, depth int, opts api.StacktraceOptions, cfg *api.LoadConfig) ([]api.Stackframe, error)
+
+	// Returns ancestor stacktraces
+	Ancestors(goroutineID int, numAncestors int, depth int) ([]api.Ancestor, error)
 
 	// Returns whether we attached to a running process or not
 	AttachedToExistingProcess() bool
@@ -138,7 +143,13 @@ type Client interface {
 	// IsMulticlien returns true if the headless instance is multiclient.
 	IsMulticlient() bool
 
+	// ListDynamicLibraries returns a list of loaded dynamic libraries.
+	ListDynamicLibraries() ([]api.Image, error)
+
 	// Disconnect closes the connection to the server without sending a Detach request first.
 	// If cont is true a continue command will be sent instead.
 	Disconnect(cont bool) error
+
+	// CallAPI allows calling an arbitrary rpc method (used by starlark bindings)
+	CallAPI(method string, args, reply interface{}) error
 }
