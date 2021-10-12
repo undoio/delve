@@ -14,7 +14,7 @@ func withUndoRecording(name string, t testing.TB, fn func(p *gdbserial.Process, 
 	fixture := protest.BuildFixture(name, 0)
 	protest.MustHaveRecordingAllowed(t)
 	if err := gdbserial.UndoIsAvailable(); err != nil {
-		t.Skip("test skipped, UndoDB tools not found")
+		t.Skip("test skipped, UDB tools not found")
 	}
 	t.Log("recording")
 	p, recording, err := gdbserial.UndoRecordAndReplay([]string{fixture.Path}, ".", true, []string{})
