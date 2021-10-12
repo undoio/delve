@@ -2970,7 +2970,7 @@ func TestIssue871(t *testing.T) {
 
 		var scope *proc.EvalScope
 		var err error
-		if testBackend == "rr" {
+		if testBackend == "rr" || testBackend == "undo" {
 			var frame proc.Stackframe
 			frame, err = findFirstNonRuntimeFrame(p)
 			if err == nil {
