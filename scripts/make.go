@@ -92,7 +92,7 @@ Use the flags -s, -r and -b to specify which tests to run. Specifying nothing is
 	default		the default backend
 	lldb		lldb backend
 	rr		rr backend
-	undo		UndoDB backend
+	undo		UDB backend
 
 This option can only be specified if testset is basic or a single package.`)
 	test.PersistentFlags().StringVarP(&TestBuildMode, "test-build-mode", "m", "", `Runs tests compiling with the specified build mode, one of either:

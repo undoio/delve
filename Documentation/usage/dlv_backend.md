@@ -12,7 +12,7 @@ are:
 	native		Native backend.
 	lldb		Uses lldb-server or debugserver.
 	rr		Uses mozilla rr (https://github.com/mozilla/rr).
-	undo		Uses UndoDB (https://undo.io).
+	undo		Uses UDB (https://undo.io).
 
 
 

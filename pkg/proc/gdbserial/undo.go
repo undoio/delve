@@ -92,7 +92,7 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 
 	if isRecording, err := UndoIsRecording(recording); !isRecording || err != nil {
 		if err == nil {
-			err = fmt.Errorf("%s is not an UndoDB recording", recording)
+			err = fmt.Errorf("%s is not a LiveRecorder recording", recording)
 		}
 		return nil, err
 	}

@@ -916,7 +916,7 @@ func (p *Process) Restart(pos string) error {
 	return p.setCurrentBreakpoints()
 }
 
-// When executes the 'when' command for the Mozilla RR/UndoDB backends.
+// When executes the 'when' command for the Mozilla RR/UDB backends.
 // This command will return rr's internal event number.
 func (p *Process) When() (string, error) {
 	if p.tracedir == "" {
