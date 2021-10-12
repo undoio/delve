@@ -2759,7 +2759,7 @@ func TestAttachDetach(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	var buildFlags protest.BuildFlags
@@ -3057,7 +3057,7 @@ func TestAttachStripped(t *testing.T) {
 			return
 		}
 	}
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 	if runtime.GOOS == "darwin" {
