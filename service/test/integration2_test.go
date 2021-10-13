@@ -474,6 +474,7 @@ func TestClientServer_breakpointInSeparateGoroutine(t *testing.T) {
 }
 
 func TestClientServer_breakAtNonexistentPoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "nowhere", Line: 1})
 		if err == nil {
@@ -483,6 +484,7 @@ func TestClientServer_breakAtNonexistentPoint(t *testing.T) {
 }
 
 func TestClientServer_clearBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testprog", t, func(c service.Client) {
 		bp, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.sleepytime", Line: 1})
 		if err != nil {
@@ -509,6 +511,7 @@ func TestClientServer_clearBreakpoint(t *testing.T) {
 }
 
 func TestClientServer_toggleBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testtoggle", t, func(c service.Client) {
 		toggle := func(bp *api.Breakpoint) {
 			t.Helper()
@@ -582,6 +585,7 @@ func TestClientServer_toggleBreakpoint(t *testing.T) {
 }
 
 func TestClientServer_toggleAmendedBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testtoggle", t, func(c service.Client) {
 		toggle := func(bp *api.Breakpoint) {
 			dbp, err := c.ToggleBreakpoint(bp.ID)
@@ -944,6 +948,7 @@ func TestClientServer_traceContinue2(t *testing.T) {
 }
 
 func TestClientServer_FindLocations(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("locationsprog", t, func(c service.Client) {
 		someFunctionCallAddr := findLocationHelper(t, c, "locationsprog.go:26", false, 1, 0)[0]
 		someFunctionLine1 := findLocationHelper(t, c, "locationsprog.go:27", false, 1, 0)[0]
@@ -1148,6 +1153,7 @@ func TestClientServer_FindLocationsAddr(t *testing.T) {
 }
 
 func TestClientServer_FindLocationsExactMatch(t *testing.T) {
+	protest.AllowRecording(t)
 	// if an expression matches multiple functions but one of them is an exact
 	// match it should be used anyway.
 	// In this example "math/rand.Intn" would normally match "math/rand.Intn"
@@ -1542,6 +1548,7 @@ func TestSkipPrologue(t *testing.T) {
 }
 
 func TestSkipPrologue2(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("callme", t, func(c service.Client) {
 		callme := findLocationHelper(t, c, "main.callme", false, 1, 0)[0]
 		callmeZ := uint64(clientEvalVariable(t, c, "main.callme").Addr)
@@ -1672,6 +1679,7 @@ func TestClientServer_Issue528(t *testing.T) {
 		return
 	}
 
+	protest.AllowRecording(t)
 	withTestClient2("issue528", t, func(c service.Client) {
 		findLocationHelper(t, c, "State.Close", false, 1, 0)
 	})
@@ -1984,6 +1992,7 @@ func TestClientServer_StepOutReturn(t *testing.T) {
 	if ver.Major >= 0 && !ver.AfterOrEqual(goversion.GoVersion{Major: 1, Minor: 10, Rev: -1}) {
 		t.Skip("return variables aren't marked on 1.9 or earlier")
 	}
+	protest.AllowRecording(t)
 	withTestClient2("stepoutret", t, func(c service.Client) {
 		c.SetReturnValuesLoadConfig(&normalLoadConfig)
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.stepout", Line: -1})
@@ -2186,6 +2195,7 @@ func TestAncestors(t *testing.T) {
 	savedGodebug := os.Getenv("GODEBUG")
 	os.Setenv("GODEBUG", "tracebackancestors=100")
 	defer os.Setenv("GODEBUG", savedGodebug)
+	protest.AllowRecording(t)
 	withTestClient2("testnextprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.testgoroutine", Line: -1})
 		assertNoError(err, t, "CreateBreakpoin")
@@ -2240,6 +2250,7 @@ func TestUnknownMethodCall(t *testing.T) {
 }
 
 func TestIssue1703(t *testing.T) {
+	protest.AllowRecording(t)
 	// Calling Disassemble when there is no current goroutine should work.
 	withTestClient2("testnextprog", t, func(c service.Client) {
 		locs, err := c.FindLocation(api.EvalScope{GoroutineID: -1}, "main.main", true, nil)
@@ -2305,6 +2316,7 @@ func TestRerecord(t *testing.T) {
 func TestIssue1787(t *testing.T) {
 	// Calling FunctionReturnLocations without a selected goroutine should
 	// work.
+	protest.AllowRecording(t)
 	withTestClient2("testnextprog", t, func(c service.Client) {
 		if c, _ := c.(*rpc2.RPCClient); c != nil {
 			c.FunctionReturnLocations("main.main")
@@ -2313,6 +2325,7 @@ func TestIssue1787(t *testing.T) {
 }
 
 func TestDoubleCreateBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testnextprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.main", Line: 1, Name: "firstbreakpoint", Tracepoint: true})
 		assertNoError(err, t, "CreateBreakpoint 1")
@@ -2371,6 +2384,7 @@ func TestClearLogicalBreakpoint(t *testing.T) {
 	// Clearing a logical breakpoint should clear all associated physical
 	// breakpoints.
 	// Issue #1955.
+	protest.AllowRecording(t)
 	withTestClient2Extended("testinline", t, protest.EnableInlining, [3]string{}, nil, func(c service.Client, fixture protest.Fixture) {
 		bp, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.inlineThis"})
 		assertNoError(err, t, "CreateBreakpoint()")
@@ -2514,6 +2528,7 @@ func assertNoDuplicateBreakpoints(t *testing.T, c service.Client) {
 
 func TestToggleBreakpointRestart(t *testing.T) {
 	// Checks that breakpoints IDs do not overlap after Restart if there are disabled breakpoints.
+	protest.AllowRecording(t)
 	withTestClient2("testtoggle", t, func(c service.Client) {
 		bp1, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.main", Line: 1, Name: "firstbreakpoint"})
 		assertNoError(err, t, "CreateBreakpoint 1")
@@ -2590,6 +2605,7 @@ func TestGoroutinesGrouping(t *testing.T) {
 func TestLongStringArg(t *testing.T) {
 	// Test the ability to load more elements of a string argument, this could
 	// be broken if registerized variables are not handled correctly.
+	protest.AllowRecording(t)
 	withTestClient2("morestringarg", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.f"})
 		assertNoError(err, t, "CreateBreakpoint")
