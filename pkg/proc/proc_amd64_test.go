@@ -33,6 +33,7 @@ func TestNextUnknownInstr(t *testing.T) {
 	if !goversion.VersionAfterOrEqual(runtime.Version(), 1, 10) {
 		t.Skip("versions of Go before 1.10 can't assemble the instruction VPUNPCKLWD")
 	}
+	protest.AllowRecording(t)
 	withTestProcess("nodisasm/", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		setFunctionBreakpoint(p, t, "main.asmFunc")
 		assertNoError(grp.Continue(), t, "Continue()")
@@ -41,6 +42,7 @@ func TestNextUnknownInstr(t *testing.T) {
 }
 
 func TestIssue1656(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestProcess("issue1656/", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		setFileBreakpoint(p, t, filepath.ToSlash(filepath.Join(fixture.BuildDir, "main.s")), 5)
 		assertNoError(grp.Continue(), t, "Continue()")
@@ -58,6 +60,7 @@ func TestBreakpointConfusionOnResume(t *testing.T) {
 	// native.(*Thread).singleStep all agree on which breakpoint the thread is
 	// stopped at.
 	// This test checks for a regression introduced when fixing Issue #1656
+	protest.AllowRecording(t)
 	withTestProcess("nopbreakpoint/", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		maindots := filepath.ToSlash(filepath.Join(fixture.BuildDir, "main.s"))
 		maindotgo := filepath.ToSlash(filepath.Join(fixture.BuildDir, "main.go"))
