@@ -64,7 +64,7 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	var p proc.Process
 	var err error
 	var tracedir string
-	var tracefile string
+	var recording string
 
 	switch testBackend {
 	case "native":
@@ -79,8 +79,8 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 	case "undo":
 		protest.MustHaveRecordingAllowed(t)
 		t.Log("recording")
-		p, tracefile, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{})
-		t.Logf("replaying")
+		p, recording, err = gdbserial.UndoRecordAndReplay(append([]string{fixture.Path}, args...), wd, true, []string{})
+		t.Logf("replaying %q", recording)
 	default:
 		t.Fatal("unknown backend")
 	}
@@ -90,8 +90,8 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 
 	defer func() {
 		p.Detach(true)
-		if tracefile != "" {
-			os.Remove(tracefile)
+		if recording != "" {
+			os.Remove(recording)
 		}
 	}()
 
@@ -341,6 +341,7 @@ func TestBreakpointWithNonExistantFunction(t *testing.T) {
 }
 
 func TestClearBreakpointBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestProcess("testprog", t, func(p proc.Process, fixture protest.Fixture) {
 		bp := setFunctionBreakpoint(p, t, "main.sleepytime")
 
@@ -1861,6 +1862,7 @@ func TestCmdLineArgs(t *testing.T) {
 		}
 	}
 
+	protest.AllowRecording(t)
 	// make sure multiple arguments (including one with spaces) are passed to the binary correctly
 	withTestProcessArgs("testargs", t, ".", []string{"test"}, 0, expectSuccess)
 	withTestProcessArgs("testargs", t, ".", []string{"-test"}, 0, expectPanic)
@@ -3117,6 +3119,7 @@ func TestAttachStripped(t *testing.T) {
 func TestIssue844(t *testing.T) {
 	// Conditional breakpoints should not prevent next from working if their
 	// condition isn't met.
+	protest.AllowRecording(t)
 	withTestProcess("nextcond", t, func(p proc.Process, fixture protest.Fixture) {
 		setFileBreakpoint(p, t, fixture.Source, 9)
 		condbp := setFileBreakpoint(p, t, fixture.Source, 10)
