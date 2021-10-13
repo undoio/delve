@@ -1112,6 +1112,7 @@ func TestConstants(t *testing.T) {
 		// Not supported on 1.9 or earlier
 		t.Skip("constants added in go 1.10")
 	}
+	protest.AllowRecording(t)
 	withTestProcess("consts", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue")
 		for _, testcase := range testcases {
@@ -1123,6 +1124,7 @@ func TestConstants(t *testing.T) {
 }
 
 func TestIssue1075(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestProcess("clientdo", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		setFunctionBreakpoint(p, t, "net/http.(*Client).Do")
 		assertNoError(grp.Continue(), t, "Continue()")
@@ -1401,6 +1403,7 @@ func testCallFunction(t *testing.T, grp *proc.TargetGroup, p *proc.Target, tc te
 
 func TestIssue1531(t *testing.T) {
 	// Go 1.12 introduced a change to the map representation where empty cells can be marked with 1 instead of just 0.
+	protest.AllowRecording(t)
 	withTestProcess("issue1531", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue()")
 
