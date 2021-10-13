@@ -23,6 +23,7 @@ func TestScopeWithEscapedVariable(t *testing.T) {
 		return
 	}
 
+	protest.AllowRecording(t)
 	withTestProcess("scopeescapevareval", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue")
 
@@ -72,6 +73,7 @@ func TestScope(t *testing.T) {
 
 	scopeChecks := getScopeChecks(scopetestPath, t)
 
+	protest.AllowRecording(t)
 	withTestProcess("scopetest", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		for i := range scopeChecks {
 			setFileBreakpoint(p, t, fixture.Source, scopeChecks[i].line)
