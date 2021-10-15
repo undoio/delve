@@ -51,7 +51,7 @@ func withTestClient2(name string, t *testing.T, fn func(c service.Client)) {
 }
 
 func startServer(name string, t *testing.T) (clientConn net.Conn, fixture protest.Fixture) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		protest.MustHaveRecordingAllowed(t)
 	}
 	listener, clientConn := service.ListenerPipe()
@@ -398,6 +398,7 @@ func TestClientServer_breakpointInSeparateGoroutine(t *testing.T) {
 }
 
 func TestClientServer_breakAtNonexistentPoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "nowhere", Line: 1})
 		if err == nil {
@@ -407,6 +408,7 @@ func TestClientServer_breakAtNonexistentPoint(t *testing.T) {
 }
 
 func TestClientServer_clearBreakpoint(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("testprog", t, func(c service.Client) {
 		bp, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.sleepytime", Line: 1})
 		if err != nil {
@@ -630,6 +632,7 @@ func TestClientServer_traceContinue2(t *testing.T) {
 }
 
 func TestClientServer_FindLocations(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("locationsprog", t, func(c service.Client) {
 		someFunctionCallAddr := findLocationHelper(t, c, "locationsprog.go:26", false, 1, 0)[0]
 		someFunctionLine1 := findLocationHelper(t, c, "locationsprog.go:27", false, 1, 0)[0]
@@ -740,6 +743,7 @@ func TestClientServer_FindLocationsAddr(t *testing.T) {
 }
 
 func TestClientServer_FindLocationsExactMatch(t *testing.T) {
+	protest.AllowRecording(t)
 	// if an expression matches multiple functions but one of them is an exact
 	// match it should be used anyway.
 	// In this example "math/rand.Intn" would normally match "math/rand.Intn"
@@ -1107,6 +1111,7 @@ func TestSkipPrologue(t *testing.T) {
 }
 
 func TestSkipPrologue2(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestClient2("callme", t, func(c service.Client) {
 		callme := findLocationHelper(t, c, "main.callme", false, 1, 0)[0]
 		callmeZ := uint64(clientEvalVariable(t, c, "main.callme").Addr)
@@ -1236,12 +1241,16 @@ func TestClientServer_Issue528(t *testing.T) {
 		return
 	}
 
+	protest.AllowRecording(t)
 	withTestClient2("issue528", t, func(c service.Client) {
 		findLocationHelper(t, c, "State.Close", false, 1, 0)
 	})
 }
 
 func TestClientServer_FpRegisters(t *testing.T) {
+	if testBackend == "undo" {
+		t.Skip("undo backend doesn't report floating-point registers [#19]")
+	}
 	regtests := []struct{ name, value string }{
 		{"ST(0)", "0x3fffe666660000000000"},
 		{"ST(1)", "0x3fffd9999a0000000000"},
@@ -1342,8 +1351,8 @@ func TestClientServer_SelectedGoroutineLoc(t *testing.T) {
 
 func TestClientServer_ReverseContinue(t *testing.T) {
 	protest.AllowRecording(t)
-	if testBackend != "rr" {
-		t.Skip("backend is not rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("backend is not rr or undo")
 	}
 	withTestClient2("continuetestprog", t, func(c service.Client) {
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.main", Line: -1})
@@ -1454,6 +1463,7 @@ func TestClientServer_StepOutReturn(t *testing.T) {
 	if ver.Major >= 0 && !ver.AfterOrEqual(goversion.GoVersion{1, 10, -1, 0, 0, ""}) {
 		t.Skip("return variables aren't marked on 1.9 or earlier")
 	}
+	protest.AllowRecording(t)
 	withTestClient2("stepoutret", t, func(c service.Client) {
 		c.SetReturnValuesLoadConfig(&normalLoadConfig)
 		_, err := c.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.stepout", Line: -1})
@@ -1507,7 +1517,7 @@ func TestClientServer_StepOutReturn(t *testing.T) {
 }
 
 func TestAcceptMulticlient(t *testing.T) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		t.Skip("recording not allowed for TestAcceptMulticlient")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1721,6 +1731,7 @@ func TestUnknownMethodCall(t *testing.T) {
 }
 
 func TestIssue1703(t *testing.T) {
+	protest.AllowRecording(t)
 	// Calling Disassemble when there is no current goroutine should work.
 	withTestClient2("testnextprog", t, func(c service.Client) {
 		locs, err := c.FindLocation(api.EvalScope{GoroutineID: -1}, "main.main")
@@ -1734,7 +1745,7 @@ func TestIssue1703(t *testing.T) {
 
 func TestRerecord(t *testing.T) {
 	protest.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		t.Skip("only valid for recorded targets")
 	}
 	withTestClient2("testrerecord", t, func(c service.Client) {
