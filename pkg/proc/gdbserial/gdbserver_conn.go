@@ -990,7 +990,7 @@ func (conn *gdbConn) restart(pos string) error {
 
 	if conn.isUndoServer {
 		if pos != "" {
-			fmt.Fprint(&conn.outbuf, "$vUndoDB;goto_time;"+pos)
+			fmt.Fprint(&conn.outbuf, "$vUDB;goto_time;"+pos)
 		} else {
 			// Find the actual min BB count.
 			// TODO: is defaulting to zero if we can't get it correct?
@@ -1006,7 +1006,7 @@ func (conn *gdbConn) restart(pos string) error {
 			}
 
 			conn.outbuf.Reset()
-			fmt.Fprint(&conn.outbuf, "$vUndoDB;goto_bbcount;"+minBbCount)
+			fmt.Fprint(&conn.outbuf, "$vUDB;goto_bbcount;"+minBbCount)
 		}
 	} else {
 		fmt.Fprint(&conn.outbuf, "$vRun;")
@@ -1042,13 +1042,13 @@ func (conn *gdbConn) qRRCmd(args ...string) (string, error) {
 	return string(data), nil
 }
 
-// undoCmd executes a vUndoDB command
+// undoCmd executes a vUDB command
 func (conn *gdbConn) undoCmd(args ...string) (string, error) {
 	if len(args) == 0 {
 		panic("must specify at least one argument for undoCmd")
 	}
 	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vUndoDB")
+	fmt.Fprint(&conn.outbuf, "$vUDB")
 	for _, arg := range args {
 		fmt.Fprint(&conn.outbuf, ":", arg)
 	}
