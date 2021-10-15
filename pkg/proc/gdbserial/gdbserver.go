@@ -928,8 +928,7 @@ func (p *Process) When() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		index := strings.Index(extent, ";")
-		result = extent[:index]
+		result = extent
 	} else {
 		event, err := p.conn.qRRCmd("when")
 		if err != nil {

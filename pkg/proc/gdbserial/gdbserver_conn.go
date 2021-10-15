@@ -996,11 +996,11 @@ func (conn *gdbConn) restart(pos string) error {
 			// TODO: is defaulting to zero if we can't get it correct?
 			minBbCount := "0"
 
-			extent, err := conn.undoCmd("get_event_log_extent")
+			extent, err := conn.undoCmd("get_log_extent")
 			if err != nil {
 				return err
 			}
-			index := strings.Index(extent, ".")
+			index := strings.Index(extent, ",")
 			if index > 0 {
 				minBbCount = extent[:index]
 			}
