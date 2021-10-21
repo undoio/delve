@@ -12,11 +12,11 @@ import (
 func serverFile() (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
-		return "undodb-server_x64", nil
+		return "udbserver_x64", nil
 	case "arm64":
-		return "undodb-server_arm64", nil
+		return "udbserver_arm64", nil
 	case "386":
-		return "undodb-server_x32", nil
+		return "udbserver_x32", nil
 	default:
 		return "", &ErrBackendUnavailable{}
 	}
