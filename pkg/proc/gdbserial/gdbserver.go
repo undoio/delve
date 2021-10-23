@@ -64,6 +64,7 @@
 package gdbserial
 
 import (
+	"bytes"
 	"debug/macho"
 	"encoding/binary"
 	"errors"
@@ -119,6 +120,8 @@ type Process struct {
 	gcmdok         bool   // true if the stub supports g and G commands
 	threadStopInfo bool   // true if the stub supports qThreadStopInfo
 	tracedir       string // if attached to rr the path to the trace directory
+
+	loadGInstrAddr uint64 // address of the g loading instruction, zero if we couldn't allocate it
 
 	process  *os.Process
 	waitChan chan *os.ProcessState
@@ -180,13 +183,13 @@ func New(process *os.Process) *Process {
 			direction:           proc.Forward,
 			log:                 logger,
 		},
-		threads:               make(map[int]*Thread),
-		bi:                    proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
-		breakpoints:           proc.NewBreakpointMap(),
-		gcmdok:                true,
-		threadStopInfo:        true,
-		process:               process,
-		common:                proc.NewCommonProcess(true),
+		threads:        make(map[int]*Thread),
+		bi:             proc.NewBinaryInfo(runtime.GOOS, runtime.GOARCH),
+		breakpoints:    proc.NewBreakpointMap(),
+		gcmdok:         true,
+		threadStopInfo: true,
+		process:        process,
+		common:         proc.NewCommonProcess(true),
 		localCheckpointLastId: 1,
 		localCheckpoints:      make(map[int]proc.Checkpoint),
 	}
@@ -269,6 +272,24 @@ func (p *Process) Connect(conn net.Conn, path string, pid int, debugInfoDirs []s
 
 	if err := p.initialize(path, debugInfoDirs); err != nil {
 		return err
+	}
+
+	if p.conn.isUndoServer {
+		return nil
+	}
+
+	// None of the stubs we support returns the value of fs_base or gs_base
+	// along with the registers, therefore we have to resort to executing a MOV
+	// instruction on the inferior to find out where the G struct of a given
+	// thread is located.
+	// Here we try to allocate some memory on the inferior which we will use to
+	// store the MOV instruction.
+	// If the stub doesn't support memory allocation reloadRegisters will
+	// overwrite some existing memory to store the MOV.
+	if addr, err := p.conn.allocMemory(256); err == nil {
+		if _, err := p.conn.writeMemory(uintptr(addr), p.loadGInstr()); err == nil {
+			p.loadGInstrAddr = addr
+		}
 	}
 	return nil
 }
@@ -1365,6 +1386,27 @@ func (t *Thread) Blocked() bool {
 	}
 }
 
+// loadGInstr returns the correct MOV instruction for the current
+// OS/architecture that can be executed to load the address of G from an
+// inferior's thread.
+func (p *Process) loadGInstr() []byte {
+	var op []byte
+	switch p.bi.GOOS {
+	case "windows", "darwin", "freebsd":
+		// mov rcx, QWORD PTR gs:{uint32(off)}
+		op = []byte{0x65, 0x48, 0x8b, 0x0c, 0x25}
+	case "linux":
+		// mov rcx,QWORD PTR fs:{uint32(off)}
+		op = []byte{0x64, 0x48, 0x8B, 0x0C, 0x25}
+	default:
+		panic("unsupported operating system attempting to find Goroutine on Thread")
+	}
+	buf := &bytes.Buffer{}
+	buf.Write(op)
+	binary.Write(buf, binary.LittleEndian, uint32(p.bi.GStructOffset()))
+	return buf.Bytes()
+}
+
 func (regs *gdbRegisters) init(regsInfo []gdbRegisterInfo) {
 	regs.regs = make(map[string]gdbRegister)
 	regs.regsInfo = regsInfo
@@ -1417,7 +1459,14 @@ func (t *Thread) reloadRegisters() error {
 		}
 	}
 
-	return t.readG()
+	if t.p.conn.isUndoServer {
+		return t.readG()
+	}
+
+	if t.p.loadGInstrAddr > 0 {
+		return t.reloadGAlloc()
+	}
+	return t.reloadGAtPC()
 }
 
 func (t *Thread) writeSomeRegisters(regNames ...string) error {
@@ -1458,8 +1507,7 @@ func (t *Thread) readSomeRegisters(regNames ...string) error {
 }
 
 // readG gets the value at fs:-8, which is the G pointer. This function
-// replaces previous baroque schemes to get the G pointer which involved
-// code injection.
+// avoids the need for code injection.
 func(t *Thread) readG() error {
 	var regnum int
 
@@ -1494,6 +1542,137 @@ func(t *Thread) readG() error {
 	}
 	t.regs.gaddr = binary.LittleEndian.Uint64(data)
 	t.regs.hasgaddr = true
+	return err
+}
+
+// reloadGAtPC overwrites the instruction that the thread is stopped at with
+// the MOV instruction used to load current G, executes this single
+// instruction and then puts everything back the way it was.
+func (t *Thread) reloadGAtPC() error {
+	movinstr := t.p.loadGInstr()
+
+	if t.Blocked() {
+		t.regs.tls = 0
+		t.regs.gaddr = 0
+		t.regs.hasgaddr = true
+		return nil
+	}
+
+	cx := t.regs.CX()
+	pc := t.regs.PC()
+
+	// We are partially replicating the code of GdbserverThread.stepInstruction
+	// here.
+	// The reason is that lldb-server has a bug with writing to memory and
+	// setting/clearing breakpoints to that same memory which we must work
+	// around by clearing and re-setting the breakpoint in a specific sequence
+	// with the memory writes.
+	// Additionally all breakpoints in [pc, pc+len(movinstr)] need to be removed
+	for addr := range t.p.breakpoints.M {
+		if addr >= pc && addr <= pc+uint64(len(movinstr)) {
+			err := t.p.conn.clearBreakpoint(addr)
+			if err != nil {
+				return err
+			}
+			defer t.p.conn.setBreakpoint(addr)
+		}
+	}
+
+	savedcode := make([]byte, len(movinstr))
+	_, err := t.ReadMemory(savedcode, uintptr(pc))
+	if err != nil {
+		return err
+	}
+
+	_, err = t.WriteMemory(uintptr(pc), movinstr)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		_, err0 := t.WriteMemory(uintptr(pc), savedcode)
+		if err == nil {
+			err = err0
+		}
+		t.regs.setPC(pc)
+		t.regs.setCX(cx)
+		err1 := t.writeSomeRegisters(regnamePC, regnameCX)
+		if err == nil {
+			err = err1
+		}
+	}()
+
+	err = t.p.conn.step(t.strID, nil, true)
+	if err != nil {
+		if err == threadBlockedError {
+			t.regs.tls = 0
+			t.regs.gaddr = 0
+			t.regs.hasgaddr = true
+			return nil
+		}
+		return err
+	}
+
+	if err := t.readSomeRegisters(regnamePC, regnameCX); err != nil {
+		return err
+	}
+
+	t.regs.gaddr = t.regs.CX()
+	t.regs.hasgaddr = true
+
+	return err
+}
+
+// reloadGAlloc makes the specified thread execute one instruction stored at
+// t.p.loadGInstrAddr then restores the value of the thread's registers.
+// t.p.loadGInstrAddr must point to valid memory on the inferior, containing
+// a MOV instruction that loads the address of the current G in the RCX
+// register.
+func (t *Thread) reloadGAlloc() error {
+	if t.Blocked() {
+		t.regs.tls = 0
+		t.regs.gaddr = 0
+		t.regs.hasgaddr = true
+		return nil
+	}
+
+	cx := t.regs.CX()
+	pc := t.regs.PC()
+
+	t.regs.setPC(t.p.loadGInstrAddr)
+	if err := t.writeSomeRegisters(regnamePC); err != nil {
+		return err
+	}
+
+	var err error
+
+	defer func() {
+		t.regs.setPC(pc)
+		t.regs.setCX(cx)
+		err1 := t.writeSomeRegisters(regnamePC, regnameCX)
+		if err == nil {
+			err = err1
+		}
+	}()
+
+	err = t.p.conn.step(t.strID, nil, true)
+	if err != nil {
+		if err == threadBlockedError {
+			t.regs.tls = 0
+			t.regs.gaddr = 0
+			t.regs.hasgaddr = true
+			return nil
+		}
+		return err
+	}
+
+	if err := t.readSomeRegisters(regnameCX); err != nil {
+		return err
+	}
+
+	t.regs.gaddr = t.regs.CX()
+	t.regs.hasgaddr = true
+
 	return err
 }
 
