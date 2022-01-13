@@ -7,9 +7,9 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/gobuild"
-	protest "github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/gobuild"
+	protest "github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/service/api"
 )
 
 func TestDebugger_LaunchNoMain(t *testing.T) {
