@@ -10,11 +10,11 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/dwarf/frame"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/dwarf/reader"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/dwarf/frame"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/reader"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/logflags"
 )
 
 // This code is partly adapted from runtime.gentraceback in

@@ -3,7 +3,7 @@ package proc
 import (
 	"fmt"
 
-	"github.com/go-delve/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/op"
 )
 
 // AsmInstruction represents one assembly instruction.

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc"
-	protest "github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc"
+	protest "github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/service/api"
 )
 
 type nextTest struct {
@@ -1152,7 +1152,7 @@ func TestRangeOverFuncNextInlined(t *testing.T) {
 			testseq2intl(t, fixture, grp, p, nil, []seqTest{
 				h.funcBreak(t, "main.TestTrickyIterAll"),
 				{contContinue, 24}, // TestTrickyIterAll
-				h.ifcond(runtime.GOARCH != "arm64" && runtime.GOARCH != "loong64"|| !goversion.VersionAfterOrEqual(runtime.Version(), 1, 27), nx(25), h.nop),
+				h.ifcond(runtime.GOARCH != "arm64" && runtime.GOARCH != "loong64" || !goversion.VersionAfterOrEqual(runtime.Version(), 1, 27), nx(25), h.nop),
 				nx(26),
 				nx(27), // for _, x := range ...
 				assertLocals(t, "trickItAll", "i"),
