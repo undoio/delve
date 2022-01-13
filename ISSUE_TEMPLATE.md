@@ -5,7 +5,7 @@ stacktraces, etc) as linked gists.
 
 If this is about source listing not showing up (or breakpoints not being
 accepted) while running in a container please read our
-[FAQ](https://github.com/go-delve/delve/blob/master/Documentation/faq.md#substpath)
+[FAQ](https://github.com/undoio/delve/blob/master/Documentation/faq.md#substpath)
 first.
 
 1. What version of Delve are you using (`dlv version`)?

@@ -211,7 +211,7 @@ Set breakpoint condition.
 
 Specifies that the breakpoint, tracepoint or watchpoint should break only if the boolean expression is true.
 
-See [Documentation/cli/expr.md](//github.com/go-delve/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions and [Documentation/cli/cond.md](//github.com/go-delve/delve/tree/master/Documentation/cli/cond.md) for a description of how breakpoint conditions are evaluated.
+See [Documentation/cli/expr.md](//github.com/undoio/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions and [Documentation/cli/cond.md](//github.com/undoio/delve/tree/master/Documentation/cli/cond.md) for a description of how breakpoint conditions are evaluated.
 
 With the -hitcount option a condition on the breakpoint hit count can be set, the following operators are supported
 
@@ -263,7 +263,7 @@ substitute-path rules are removed. Without arguments shows the current list
 of substitute-path rules.
 The -guess option causes Delve to try to guess your substitute-path
 configuration automatically.
-See also [Documentation/cli/substitutepath.md](//github.com/go-delve/delve/tree/master/Documentation/cli/substitutepath.md) for how the rules are applied.
+See also [Documentation/cli/substitutepath.md](//github.com/undoio/delve/tree/master/Documentation/cli/substitutepath.md) for how the rules are applied.
 
 	config alias <command> <alias>
 	config alias <alias>
@@ -585,7 +585,7 @@ Evaluate an expression.
 
 	[goroutine <n>] [frame <m>] print [%format] <expression>
 
-See [Documentation/cli/expr.md](//github.com/go-delve/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions.
+See [Documentation/cli/expr.md](//github.com/undoio/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions.
 
 The optional format argument is a format specifier, like the ones used by the fmt package. For example "print %x v" will print v as an hexadecimal number.
 
@@ -600,7 +600,7 @@ Print contents of CPU registers.
 
 	regs [-a]
 
-Argument -a shows more registers. Individual registers can also be displayed by 'print' and 'display'. See [Documentation/cli/expr.md](//github.com/go-delve/delve/tree/master/Documentation/cli/expr.md).
+Argument -a shows more registers. Individual registers can also be displayed by 'print' and 'display'. See [Documentation/cli/expr.md](//github.com/undoio/delve/tree/master/Documentation/cli/expr.md).
 
 
 ## restart
@@ -643,7 +643,7 @@ Changes the value of a variable.
 
 	[goroutine <n>] [frame <m>] set <variable> = <value>
 
-See [Documentation/cli/expr.md](//github.com/go-delve/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions. Only numerical variables and pointers can be changed.
+See [Documentation/cli/expr.md](//github.com/undoio/delve/tree/master/Documentation/cli/expr.md) for a description of supported expressions. Only numerical variables and pointers can be changed.
 
 
 ## source
@@ -651,7 +651,7 @@ Executes a file containing a list of delve commands
 
 	source <path>
 	
-If path ends with the .star extension it will be interpreted as a starlark script. See [Documentation/cli/starlark.md](//github.com/go-delve/delve/tree/master/Documentation/cli/starlark.md) for the syntax.
+If path ends with the .star extension it will be interpreted as a starlark script. See [Documentation/cli/starlark.md](//github.com/undoio/delve/tree/master/Documentation/cli/starlark.md) for the syntax.
 
 If path is a single '-' character an interactive starlark interpreter will start instead. Type 'exit' to exit.
 
@@ -735,7 +735,7 @@ Set tracepoint.
 
 	trace [name] [locspec]
 
-A tracepoint is a breakpoint that does not stop the execution of the program, instead when the tracepoint is hit a notification is displayed. See [Documentation/cli/locspec.md](//github.com/go-delve/delve/tree/master/Documentation/cli/locspec.md) for the syntax of locspec. If locspec is omitted a tracepoint will be set on the current line.
+A tracepoint is a breakpoint that does not stop the execution of the program, instead when the tracepoint is hit a notification is displayed. See [Documentation/cli/locspec.md](//github.com/undoio/delve/tree/master/Documentation/cli/locspec.md) for the syntax of locspec. If locspec is omitted a tracepoint will be set on the current line.
 
 See also: "help on", "help cond" and "help clear"
 

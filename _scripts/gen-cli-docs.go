@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/go-delve/delve/pkg/terminal"
+	"github.com/undoio/delve/pkg/terminal"
 )
 
 func main() {
