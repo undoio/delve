@@ -13,13 +13,13 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/go-delve/delve/pkg/astutil"
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/dwarf/reader"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc/evalop"
-	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
+	"github.com/undoio/delve/pkg/astutil"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/reader"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc/evalop"
+	"github.com/undoio/delve/pkg/proc/internal/ebpf"
 )
 
 const (

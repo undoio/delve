@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/goversion"
 )
 
 // EnableRace allows to configure whether the race detector is enabled on target process.
@@ -459,14 +459,14 @@ func GetDlvBinaryEBPF(t *testing.T) string {
 func getDlvBinInternal(t *testing.T, goflags ...string) string {
 	dlvbin := filepath.Join(t.TempDir(), "dlv.exe")
 	args := append([]string{"build", "-o", dlvbin}, goflags...)
-	args = append(args, "github.com/go-delve/delve/cmd/dlv")
+	args = append(args, "github.com/undoio/delve/cmd/dlv")
 
 	wd, _ := os.Getwd()
 	fmt.Printf("at %s %s\n", wd, goflags)
 
 	out, err := exec.Command("go", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("go build -o %v github.com/go-delve/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
+		t.Fatalf("go build -o %v github.com/undoio/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
 	}
 
 	return dlvbin

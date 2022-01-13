@@ -24,7 +24,7 @@ func main() {
 	buf := bytes.NewBuffer([]byte{})
 	fmt.Fprintf(buf, "// DO NOT EDIT: auto-generated using _scripts/gen-suitablemethods.go\n\n")
 	fmt.Fprintf(buf, "package rpccommon\n\n")
-	fmt.Fprintf(buf, "import ( \"reflect\"; \"github.com/go-delve/delve/service/rpc2\" )\n")
+	fmt.Fprintf(buf, "import ( \"reflect\"; \"github.com/undoio/delve/service/rpc2\" )\n")
 
 	dorpc(buf, "rpc2.RPCServer", "rpc2", "2")
 	dorpc(buf, "RPCServer", "rpccommon", "Common")
@@ -55,10 +55,10 @@ func dorpc(buf io.Writer, typename, pkgname, outname string) {
 		Mode: packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedName | packages.NeedCompiledGoFiles | packages.NeedTypes,
 		Fset: fset,
 	}
-	pkgs, err := packages.Load(cfg, fmt.Sprintf("github.com/go-delve/delve/service/%s", pkgname))
+	pkgs, err := packages.Load(cfg, fmt.Sprintf("github.com/undoio/delve/service/%s", pkgname))
 	must(err, "error loading packages: %v", err)
 	packages.Visit(pkgs, func(pkg *packages.Package) bool {
-		if pkg.PkgPath != fmt.Sprintf("github.com/go-delve/delve/service/%s", pkgname) {
+		if pkg.PkgPath != fmt.Sprintf("github.com/undoio/delve/service/%s", pkgname) {
 			return true
 		}
 		mset := types.NewMethodSet(types.NewPointer(pkg.Types.Scope().Lookup("RPCServer").Type()))
