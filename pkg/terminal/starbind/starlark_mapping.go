@@ -4,8 +4,8 @@ package starbind
 
 import (
 	"fmt"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/rpc2"
 	"go.starlark.net/starlark"
 )
 
@@ -359,7 +359,7 @@ func (env *Env) starlarkPredeclare() (starlark.StringDict, map[string]string) {
 		}
 		return env.interfaceToStarlarkValue(rpcRet), nil
 	})
-	doc["create_breakpoint"] = "builtin create_breakpoint(Breakpoint, LocExpr, SubstitutePathRules, Suspended)\n\ncreate_breakpoint creates a new breakpoint. The client is expected to populate `CreateBreakpointIn`\nwith an `api.Breakpoint` struct describing where to set the breakpoint. For more information on\nhow to properly request a breakpoint via the `api.Breakpoint` struct see the documentation for\n`debugger.CreateBreakpoint` here: https://pkg.go.dev/github.com/go-delve/delve/service/debugger#Debugger.CreateBreakpoint."
+	doc["create_breakpoint"] = "builtin create_breakpoint(Breakpoint, LocExpr, SubstitutePathRules, Suspended)\n\ncreate_breakpoint creates a new breakpoint. The client is expected to populate `CreateBreakpointIn`\nwith an `api.Breakpoint` struct describing where to set the breakpoint. For more information on\nhow to properly request a breakpoint via the `api.Breakpoint` struct see the documentation for\n`debugger.CreateBreakpoint` here: https://pkg.go.dev/github.com/undoio/delve/service/debugger#Debugger.CreateBreakpoint."
 	r["create_ebpf_tracepoint"] = starlark.NewBuiltin("create_ebpf_tracepoint", func(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		if err := isCancelled(thread); err != nil {
 			return starlark.None, decorateError(thread, err)
@@ -693,7 +693,7 @@ func (env *Env) starlarkPredeclare() (starlark.StringDict, map[string]string) {
 		}
 		return env.interfaceToStarlarkValue(rpcRet), nil
 	})
-	doc["eval"] = "builtin eval(Scope, Expr, Cfg)\n\neval returns a variable in the specified context.\n\nSee https://github.com/go-delve/delve/blob/master/Documentation/cli/expr.md\nfor a description of acceptable values of arg.Expr."
+	doc["eval"] = "builtin eval(Scope, Expr, Cfg)\n\neval returns a variable in the specified context.\n\nSee https://github.com/undoio/delve/blob/master/Documentation/cli/expr.md\nfor a description of acceptable values of arg.Expr."
 	r["examine_memory"] = starlark.NewBuiltin("examine_memory", func(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		if err := isCancelled(thread); err != nil {
 			return starlark.None, decorateError(thread, err)

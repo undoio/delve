@@ -8,8 +8,8 @@ import (
 	"net/rpc/jsonrpc"
 	"time"
 
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
 )
 
 // RPCClient is a RPC service.Client.
@@ -242,7 +242,7 @@ func (c *RPCClient) GetBreakpointByName(name string) (*api.Breakpoint, error) {
 // CreateBreakpoint will send a request to the RPC server to create a breakpoint.
 // Please refer to the documentation for `Debugger.CreateBreakpoint` for a description of how
 // the requested breakpoint parameters are interpreted and used:
-// https://pkg.go.dev/github.com/go-delve/delve/service/debugger#Debugger.CreateBreakpoint
+// https://pkg.go.dev/github.com/undoio/delve/service/debugger#Debugger.CreateBreakpoint
 func (c *RPCClient) CreateBreakpoint(breakPoint *api.Breakpoint) (*api.Breakpoint, error) {
 	var out CreateBreakpointOut
 	err := c.call("CreateBreakpoint", CreateBreakpointIn{*breakPoint, "", nil, false}, &out)
