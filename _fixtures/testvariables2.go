@@ -10,7 +10,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/go-delve/delve/_fixtures/internal/issue4179helper"
+	"github.com/undoio/delve/_fixtures/internal/issue4179helper"
 )
 
 type (

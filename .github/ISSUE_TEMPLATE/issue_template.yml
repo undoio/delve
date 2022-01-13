@@ -24,7 +24,7 @@ body:
     attributes:
       label: Description
       value: |
-        If this is about source listing not showing up (or breakpoints not being accepted) while running in a container please read our [FAQ](https://github.com/go-delve/delve/blob/master/Documentation/faq.md#substpath) first.
+        If this is about source listing not showing up (or breakpoints not being accepted) while running in a container please read our [FAQ](https://github.com/undoio/delve/blob/master/Documentation/faq.md#substpath) first.
         
         1. What did you do?
         2. What did you expect to see?

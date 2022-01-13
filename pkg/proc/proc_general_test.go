@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unsafe"
 
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 func ptrSizeByRuntimeArch() int {
@@ -169,20 +169,20 @@ func TestRegabiFlagSentinel(t *testing.T) {
 
 func TestGenericFunctionParser(t *testing.T) {
 	var testCases = []struct{ name, pkg, rcv, base string }{
-		{"github.com/go-delve/delve.afunc", "github.com/go-delve/delve", "", "afunc"},
-		{"github.com/go-delve/delve..afunc", "github.com/go-delve/delve", "", "afunc"}, // malformed
-		{"github.com/go-delve/delve.afunc[some/[thing].el se]", "github.com/go-delve/delve", "", "afunc[some/[thing].el se]"},
-		{"github.com/go-delve/delve.Receiver.afunc", "github.com/go-delve/delve", "Receiver", "afunc"},
-		{"github.com/go-delve/delve.(*Receiver).afunc", "github.com/go-delve/delve", "(*Receiver)", "afunc"},
-		{"github.com/go-delve/delve.Receiver.afunc[some/[thing].el se]", "github.com/go-delve/delve", "Receiver", "afunc[some/[thing].el se]"},       // malformed
-		{"github.com/go-delve/delve.(*Receiver).afunc[some/[thing].el se]", "github.com/go-delve/delve", "(*Receiver)", "afunc[some/[thing].el se]"}, // malformed
-		{"github.com/go-delve/delve.Receiver[some/[thing].el se].afunc", "github.com/go-delve/delve", "Receiver[some/[thing].el se]", "afunc"},
-		{"github.com/go-delve/delve.(*Receiver[some/[thing].el se]).afunc", "github.com/go-delve/delve", "(*Receiver[some/[thing].el se])", "afunc"},
+		{"github.com/undoio/delve.afunc", "github.com/undoio/delve", "", "afunc"},
+		{"github.com/undoio/delve..afunc", "github.com/undoio/delve", "", "afunc"}, // malformed
+		{"github.com/undoio/delve.afunc[some/[thing].el se]", "github.com/undoio/delve", "", "afunc[some/[thing].el se]"},
+		{"github.com/undoio/delve.Receiver.afunc", "github.com/undoio/delve", "Receiver", "afunc"},
+		{"github.com/undoio/delve.(*Receiver).afunc", "github.com/undoio/delve", "(*Receiver)", "afunc"},
+		{"github.com/undoio/delve.Receiver.afunc[some/[thing].el se]", "github.com/undoio/delve", "Receiver", "afunc[some/[thing].el se]"},       // malformed
+		{"github.com/undoio/delve.(*Receiver).afunc[some/[thing].el se]", "github.com/undoio/delve", "(*Receiver)", "afunc[some/[thing].el se]"}, // malformed
+		{"github.com/undoio/delve.Receiver[some/[thing].el se].afunc", "github.com/undoio/delve", "Receiver[some/[thing].el se]", "afunc"},
+		{"github.com/undoio/delve.(*Receiver[some/[thing].el se]).afunc", "github.com/undoio/delve", "(*Receiver[some/[thing].el se])", "afunc"},
 
-		{"github.com/go-delve/delve.afunc[.some/[thing].el se]", "github.com/go-delve/delve", "", "afunc[.some/[thing].el se]"},
-		{"github.com/go-delve/delve.Receiver.afunc[.some/[thing].el se]", "github.com/go-delve/delve", "Receiver", "afunc[.some/[thing].el se]"}, // malformed
-		{"github.com/go-delve/delve.Receiver[.some/[thing].el se].afunc", "github.com/go-delve/delve", "Receiver[.some/[thing].el se]", "afunc"},
-		{"github.com/go-delve/delve.(*Receiver[.some/[thing].el se]).afunc", "github.com/go-delve/delve", "(*Receiver[.some/[thing].el se])", "afunc"},
+		{"github.com/undoio/delve.afunc[.some/[thing].el se]", "github.com/undoio/delve", "", "afunc[.some/[thing].el se]"},
+		{"github.com/undoio/delve.Receiver.afunc[.some/[thing].el se]", "github.com/undoio/delve", "Receiver", "afunc[.some/[thing].el se]"}, // malformed
+		{"github.com/undoio/delve.Receiver[.some/[thing].el se].afunc", "github.com/undoio/delve", "Receiver[.some/[thing].el se]", "afunc"},
+		{"github.com/undoio/delve.(*Receiver[.some/[thing].el se]).afunc", "github.com/undoio/delve", "(*Receiver[.some/[thing].el se])", "afunc"},
 
 		{"stdlib.afunc", "stdlib", "", "afunc"},
 		{"stdlib/subpkg.afunc", "stdlib/subpkg", "", "afunc"},
@@ -200,14 +200,14 @@ func TestGenericFunctionParser(t *testing.T) {
 
 		{"stdlib.Receiver.afunc[other[type]/para[meters]]", "stdlib", "Receiver", "afunc[other[type]/para[meters]]"},
 		{"stdlib.(*Receiver).afunc[other[type]/para[meters]]", "stdlib", "(*Receiver)", "afunc[other[type]/para[meters]]"},
-		{"github.com/go-delve/delve.Receiver.afunc[other[type]/para[meters]]", "github.com/go-delve/delve", "Receiver", "afunc[other[type]/para[meters]]"},
-		{"github.com/go-delve/delve.(*Receiver).afunc[other[type]/para[meters]]", "github.com/go-delve/delve", "(*Receiver)", "afunc[other[type]/para[meters]]"},
+		{"github.com/undoio/delve.Receiver.afunc[other[type]/para[meters]]", "github.com/undoio/delve", "Receiver", "afunc[other[type]/para[meters]]"},
+		{"github.com/undoio/delve.(*Receiver).afunc[other[type]/para[meters]]", "github.com/undoio/delve", "(*Receiver)", "afunc[other[type]/para[meters]]"},
 		{"stdlib.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "stdlib", "Receiver[some[thing].el/se]", "afunc[other[type]/para[meters]]"},
 		{"stdlib.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "stdlib", "(*Receiver[some[thing].el/se])", "afunc[other[type]/para[meters]]"},
 		{"stdlib/subpkg.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "stdlib/subpkg", "Receiver[some[thing].el/se]", "afunc[other[type]/para[meters]]"},
 		{"stdlib/subpkg.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "stdlib/subpkg", "(*Receiver[some[thing].el/se])", "afunc[other[type]/para[meters]]"},
-		{"github.com/go-delve/delve.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "github.com/go-delve/delve", "Receiver[some[thing].el/se]", "afunc[other[type]/para[meters]]"},
-		{"github.com/go-delve/delve.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "github.com/go-delve/delve", "(*Receiver[some[thing].el/se])", "afunc[other[type]/para[meters]]"},
+		{"github.com/undoio/delve.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "github.com/undoio/delve", "Receiver[some[thing].el/se]", "afunc[other[type]/para[meters]]"},
+		{"github.com/undoio/delve.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "github.com/undoio/delve", "(*Receiver[some[thing].el/se])", "afunc[other[type]/para[meters]]"},
 
 		///// Tests from debug/gosym/symtab_test.go
 		// TestStandardLibPackage
@@ -247,20 +247,20 @@ func TestGenericFunctionParser(t *testing.T) {
 
 func TestGenericFunctionNameWithoutParameters(t *testing.T) {
 	var testCases = []struct{ name, tgt string }{
-		{"github.com/go-delve/delve.afunc", "github.com/go-delve/delve.afunc"},
-		{"github.com/go-delve/delve..afunc", "github.com/go-delve/delve..afunc"}, // malformed
-		{"github.com/go-delve/delve.afunc[some/[thing].el se]", "github.com/go-delve/delve.afunc"},
-		{"github.com/go-delve/delve.Receiver.afunc", "github.com/go-delve/delve.Receiver.afunc"},
-		{"github.com/go-delve/delve.(*Receiver).afunc", "github.com/go-delve/delve.(*Receiver).afunc"},
-		{"github.com/go-delve/delve.Receiver.afunc[some/[thing].el se]", "github.com/go-delve/delve.Receiver.afunc"},       // malformed
-		{"github.com/go-delve/delve.(*Receiver).afunc[some/[thing].el se]", "github.com/go-delve/delve.(*Receiver).afunc"}, // malformed
-		{"github.com/go-delve/delve.Receiver[some/[thing].el se].afunc", "github.com/go-delve/delve.Receiver.afunc"},
-		{"github.com/go-delve/delve.(*Receiver[some/[thing].el se]).afunc", "github.com/go-delve/delve.(*Receiver).afunc"},
+		{"github.com/undoio/delve.afunc", "github.com/undoio/delve.afunc"},
+		{"github.com/undoio/delve..afunc", "github.com/undoio/delve..afunc"}, // malformed
+		{"github.com/undoio/delve.afunc[some/[thing].el se]", "github.com/undoio/delve.afunc"},
+		{"github.com/undoio/delve.Receiver.afunc", "github.com/undoio/delve.Receiver.afunc"},
+		{"github.com/undoio/delve.(*Receiver).afunc", "github.com/undoio/delve.(*Receiver).afunc"},
+		{"github.com/undoio/delve.Receiver.afunc[some/[thing].el se]", "github.com/undoio/delve.Receiver.afunc"},       // malformed
+		{"github.com/undoio/delve.(*Receiver).afunc[some/[thing].el se]", "github.com/undoio/delve.(*Receiver).afunc"}, // malformed
+		{"github.com/undoio/delve.Receiver[some/[thing].el se].afunc", "github.com/undoio/delve.Receiver.afunc"},
+		{"github.com/undoio/delve.(*Receiver[some/[thing].el se]).afunc", "github.com/undoio/delve.(*Receiver).afunc"},
 
-		{"github.com/go-delve/delve.afunc[.some/[thing].el se]", "github.com/go-delve/delve.afunc"},
-		{"github.com/go-delve/delve.Receiver.afunc[.some/[thing].el se]", "github.com/go-delve/delve.Receiver.afunc"}, // malformed
-		{"github.com/go-delve/delve.Receiver[.some/[thing].el se].afunc", "github.com/go-delve/delve.Receiver.afunc"},
-		{"github.com/go-delve/delve.(*Receiver[.some/[thing].el se]).afunc", "github.com/go-delve/delve.(*Receiver).afunc"},
+		{"github.com/undoio/delve.afunc[.some/[thing].el se]", "github.com/undoio/delve.afunc"},
+		{"github.com/undoio/delve.Receiver.afunc[.some/[thing].el se]", "github.com/undoio/delve.Receiver.afunc"}, // malformed
+		{"github.com/undoio/delve.Receiver[.some/[thing].el se].afunc", "github.com/undoio/delve.Receiver.afunc"},
+		{"github.com/undoio/delve.(*Receiver[.some/[thing].el se]).afunc", "github.com/undoio/delve.(*Receiver).afunc"},
 
 		{"stdlib.afunc", "stdlib.afunc"},
 		{"stdlib/subpkg.afunc", "stdlib/subpkg.afunc"},
@@ -278,14 +278,14 @@ func TestGenericFunctionNameWithoutParameters(t *testing.T) {
 
 		{"stdlib.Receiver.afunc[other[type]/para[meters]]", "stdlib.Receiver.afunc"},
 		{"stdlib.(*Receiver).afunc[other[type]/para[meters]]", "stdlib.(*Receiver).afunc"},
-		{"github.com/go-delve/delve.Receiver.afunc[other[type]/para[meters]]", "github.com/go-delve/delve.Receiver.afunc"},
-		{"github.com/go-delve/delve.(*Receiver).afunc[other[type]/para[meters]]", "github.com/go-delve/delve.(*Receiver).afunc"},
+		{"github.com/undoio/delve.Receiver.afunc[other[type]/para[meters]]", "github.com/undoio/delve.Receiver.afunc"},
+		{"github.com/undoio/delve.(*Receiver).afunc[other[type]/para[meters]]", "github.com/undoio/delve.(*Receiver).afunc"},
 		{"stdlib.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "stdlib.Receiver.afunc"},
 		{"stdlib.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "stdlib.(*Receiver).afunc"},
 		{"stdlib/subpkg.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "stdlib/subpkg.Receiver.afunc"},
 		{"stdlib/subpkg.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "stdlib/subpkg.(*Receiver).afunc"},
-		{"github.com/go-delve/delve.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "github.com/go-delve/delve.Receiver.afunc"},
-		{"github.com/go-delve/delve.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "github.com/go-delve/delve.(*Receiver).afunc"},
+		{"github.com/undoio/delve.Receiver[some[thing].el/se].afunc[other[type]/para[meters]]", "github.com/undoio/delve.Receiver.afunc"},
+		{"github.com/undoio/delve.(*Receiver[some[thing].el/se]).afunc[other[type]/para[meters]]", "github.com/undoio/delve.(*Receiver).afunc"},
 
 		///// Tests from debug/gosym/symtab_test.go
 		// TestStandardLibPackage

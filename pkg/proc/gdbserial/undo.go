@@ -17,7 +17,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 	"golang.org/x/mod/semver"
 )
 

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-delve/delve/pkg/internal/gosym"
+	"github.com/undoio/delve/pkg/internal/gosym"
 )
 
 func readPcLnTableElf(exe *elf.File, path string) (*gosym.Table, uint64, error) {
