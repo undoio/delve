@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/service/api"
 )
 
 // Launch debug sessions support the following modes:
@@ -207,7 +207,7 @@ type LaunchAttachCommonConfig struct {
 
 	// String value to indicate which system goroutines should be
 	// shown in the call stack view. See filtering documentation:
-	// https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutines
+	// https://github.com/undoio/delve/blob/master/Documentation/cli/README.md#goroutines
 	GoroutineFilters string `json:"goroutineFilters,omitempty"`
 
 	// Array of string values indicating the keys of pprof labels to show as a

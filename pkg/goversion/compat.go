@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/go-delve/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/logflags"
 )
 
 //lint:file-ignore ST1005 errors here can be capitalized

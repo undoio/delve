@@ -5,9 +5,9 @@ import (
 	"net/rpc"
 	"testing"
 
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/liner"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
 )
 
 func TestIsErrProcessExited(t *testing.T) {

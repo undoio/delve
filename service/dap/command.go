@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
 	"github.com/google/go-dap"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/rpc2"
 )
 
 func (s *Session) delveCmd(goid, frame int, cmdstr string) (string, error) {

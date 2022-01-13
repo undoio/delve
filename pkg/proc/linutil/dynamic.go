@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 const (

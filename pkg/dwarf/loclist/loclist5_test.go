@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/dwarf/leb128"
+	"github.com/undoio/delve/pkg/dwarf/leb128"
 )
 
 func TestLoclist5(t *testing.T) {
