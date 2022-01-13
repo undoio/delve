@@ -32,16 +32,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-delve/delve/pkg/gobuild"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/locspec"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/gobuild"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/locspec"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc"
 
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/debugger"
-	"github.com/go-delve/delve/service/internal/sameuser"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/debugger"
+	"github.com/undoio/delve/service/internal/sameuser"
 	"github.com/google/go-dap"
 
 	"github.com/sirupsen/logrus"
@@ -2469,7 +2469,7 @@ func (s *Session) convertVariableWithOpts(v *proc.Variable, qualifiedNameOrExpr 
 	var reloadVariable = func(v *proc.Variable, qualifiedNameOrExpr string) (value string) {
 		// We might be loading variables from the frame that's not topmost, so use
 		// frame-independent address-based expression, not fully-qualified name as per
-		// https://github.com/go-delve/delve/blob/master/Documentation/api/ClientHowto.md#looking-into-variables.
+		// https://github.com/undoio/delve/blob/master/Documentation/api/ClientHowto.md#looking-into-variables.
 		// TODO(polina): Get *proc.Variable object from debugger instead. Export a function to set v.loaded to false
 		// and call v.loadValue gain with a different load config. It's more efficient, and it's guaranteed to keep
 		// working with generics.

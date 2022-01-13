@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 // Process represents all of the information the debugger

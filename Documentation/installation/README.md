@@ -4,15 +4,15 @@ The following instructions are known to work on Linux, macOS, Windows and FreeBS
 Clone the git repository and build:
 
 ```
-$ git clone https://github.com/go-delve/delve
+$ git clone https://github.com/undoio/delve
 $ cd delve
-$ go install github.com/go-delve/delve/cmd/dlv
+$ go install github.com/undoio/delve/cmd/dlv
 ```
 
 On Go version 1.16 or later, this command will also work:
 
 ```
-$ go install github.com/go-delve/delve/cmd/dlv@latest
+$ go install github.com/undoio/delve/cmd/dlv@latest
 ```
 
 See `go help install` for details on where the `dlv` executable is saved.
@@ -20,7 +20,7 @@ See `go help install` for details on where the `dlv` executable is saved.
 If during the install step you receive an error similar to this:
 
 ```
-found packages native (proc.go) and your_operating_system_and_architecture_combination_is_not_supported_by_delve (support_sentinel.go) in /home/pi/go/src/github.com/go-delve/delve/pkg/proc/native
+found packages native (proc.go) and your_operating_system_and_architecture_combination_is_not_supported_by_delve (support_sentinel.go) in /home/pi/go/src/github.com/undoio/delve/pkg/proc/native
 ```
 
 It means that your combination of operating system and CPU architecture is not supported, check the output of `go version`.
@@ -51,7 +51,7 @@ You do not need the macOS native backend and it [has known problems](https://git
 
 1. Run `xcode-select --install`
 2. On macOS 10.14 manually install the legacy include headers by running `/Library/Developer/CommandLineTools/Packages/macOS_SDK_headers_for_macOS_10.14.pkg`
-3. Clone the repo into `$GOPATH/src/github.com/go-delve/delve`
+3. Clone the repo into `$GOPATH/src/github.com/undoio/delve`
 4. Run `make install` in that directory (on some versions of macOS this requires being root, the first time you run it, to install a new certificate)
 
 The makefile will take care of creating and installing a self-signed certificate automatically.

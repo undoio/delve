@@ -26,12 +26,12 @@ import (
 	"time"
 
 	"github.com/cosiner/argv"
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/pkg/locspec"
-	"github.com/go-delve/delve/pkg/terminal/colorize"
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/pkg/locspec"
+	"github.com/undoio/delve/pkg/terminal/colorize"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/rpc2"
 )
 
 const optimizedFunctionWarning = "Warning: debugging optimized function"
@@ -124,14 +124,14 @@ Type "help" followed by the name of a command for more information about it.`},
 
 	break [name] <linespec>
 
-See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/locspec.md for the syntax of linespec.
+See $GOPATH/src/github.com/undoio/delve/Documentation/cli/locspec.md for the syntax of linespec.
 
 See also: "help on", "help cond" and "help clear"`},
 		{aliases: []string{"trace", "t"}, group: breakCmds, cmdFn: tracepoint, allowedPrefixes: onPrefix, helpMsg: `Set tracepoint.
 
 	trace [name] <linespec>
 
-A tracepoint is a breakpoint that does not stop the execution of the program, instead when the tracepoint is hit a notification is displayed. See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/locspec.md for the syntax of linespec.
+A tracepoint is a breakpoint that does not stop the execution of the program, instead when the tracepoint is hit a notification is displayed. See $GOPATH/src/github.com/undoio/delve/Documentation/cli/locspec.md for the syntax of linespec.
 
 See also: "help on", "help cond" and "help clear"`},
 		{aliases: []string{"watch"}, group: breakCmds, cmdFn: watchpoint, helpMsg: `Set watchpoint.
@@ -300,7 +300,7 @@ Specifying -a prints all physical breakpoint, including internal breakpoints.`},
 
 	[goroutine <n>] [frame <m>] print [%format] <expression>
 
-See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/expr.md for a description of supported expressions.
+See $GOPATH/src/github.com/undoio/delve/Documentation/cli/expr.md for a description of supported expressions.
 
 The optional format argument is a format specifier, like the ones used by the fmt package. For example "print %x v" will print v as an hexadecimal number.`},
 		{aliases: []string{"whatis"}, group: dataCmds, cmdFn: whatisCommand, helpMsg: `Prints type of an expression.
@@ -310,7 +310,7 @@ The optional format argument is a format specifier, like the ones used by the fm
 
 	[goroutine <n>] [frame <m>] set <variable> = <value>
 
-See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/expr.md for a description of supported expressions. Only numerical variables and pointers can be changed.`},
+See $GOPATH/src/github.com/undoio/delve/Documentation/cli/expr.md for a description of supported expressions. Only numerical variables and pointers can be changed.`},
 		{aliases: []string{"sources"}, cmdFn: sources, helpMsg: `Print list of source files.
 
 	sources [<regex>]
@@ -347,7 +347,7 @@ If regex is specified only package variables with a name matching it will be ret
 
 	regs [-a]
 
-Argument -a shows more registers. Individual registers can also be displayed by 'print' and 'display'. See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/expr.md.`},
+Argument -a shows more registers. Individual registers can also be displayed by 'print' and 'display'. See $GOPATH/src/github.com/undoio/delve/Documentation/cli/expr.md.`},
 		{aliases: []string{"exit", "quit", "q"}, cmdFn: exitCommand, helpMsg: `Exit the debugger.
 		
 	exit [-c]
@@ -422,7 +422,7 @@ Executes the specified command (print, args, locals) in the context of the n-th 
 
 	source <path>
 	
-If path ends with the .star extension it will be interpreted as a starlark script. See $GOPATH/src/github.com/go-delve/delve/Documentation/cli/starlark.md for the syntax.
+If path ends with the .star extension it will be interpreted as a starlark script. See $GOPATH/src/github.com/undoio/delve/Documentation/cli/starlark.md for the syntax.
 
 If path is a single '-' character an interactive starlark interpreter will start instead. Type 'exit' to exit.`},
 		{aliases: []string{"disassemble", "disass"}, cmdFn: disassCommand, helpMsg: `Disassembler.

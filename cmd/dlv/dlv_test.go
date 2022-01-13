@@ -21,12 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	protest "github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/pkg/terminal"
-	"github.com/go-delve/delve/service/dap"
-	"github.com/go-delve/delve/service/dap/daptest"
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/pkg/goversion"
+	protest "github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/pkg/terminal"
+	"github.com/undoio/delve/service/dap"
+	"github.com/undoio/delve/service/dap/daptest"
+	"github.com/undoio/delve/service/rpc2"
 	godap "github.com/google/go-dap"
 	"golang.org/x/tools/go/packages"
 )
@@ -220,11 +220,11 @@ func getDlvBinInternal(t *testing.T, goflags ...string) (string, string) {
 
 	dlvbin := filepath.Join(tmpdir, "dlv.exe")
 	args := append([]string{"build", "-o", dlvbin}, goflags...)
-	args = append(args, "github.com/go-delve/delve/cmd/dlv")
+	args = append(args, "github.com/undoio/delve/cmd/dlv")
 
 	out, err := exec.Command("go", args...).CombinedOutput()
 	if err != nil {
-		t.Fatalf("go build -o %v github.com/go-delve/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
+		t.Fatalf("go build -o %v github.com/undoio/delve/cmd/dlv: %v\n%s", dlvbin, err, string(out))
 	}
 
 	return dlvbin, tmpdir
@@ -283,7 +283,7 @@ func TestContinue(t *testing.T) {
 // TestChildProcessExitWhenNoDebugInfo verifies that the child process exits when dlv launch the binary without debug info
 func TestChildProcessExitWhenNoDebugInfo(t *testing.T) {
 	if runtime.GOOS == "darwin" {
-		t.Skip("test skipped on darwin, see https://github.com/go-delve/delve/pull/2018 for details")
+		t.Skip("test skipped on darwin, see https://github.com/undoio/delve/pull/2018 for details")
 	}
 
 	if _, err := exec.LookPath("ps"); err != nil {
@@ -544,7 +544,7 @@ func TestTypecheckRPC(t *testing.T) {
 		Mode: packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedName | packages.NeedCompiledGoFiles | packages.NeedTypes,
 		Fset: fset,
 	}
-	pkgs, err := packages.Load(cfg, "github.com/go-delve/delve/service/rpc2")
+	pkgs, err := packages.Load(cfg, "github.com/undoio/delve/service/rpc2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +552,7 @@ func TestTypecheckRPC(t *testing.T) {
 	var serverMethods map[string]*types.Func
 	var info *types.Info
 	packages.Visit(pkgs, func(pkg *packages.Package) bool {
-		if pkg.PkgPath != "github.com/go-delve/delve/service/rpc2" {
+		if pkg.PkgPath != "github.com/undoio/delve/service/rpc2" {
 			return true
 		}
 		t.Logf("package found: %v", pkg.PkgPath)
@@ -1106,7 +1106,7 @@ func TestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error executing `dlv version`: %v\n%s\n", err, got)
 	}
-	want1 := []byte("mod\tgithub.com/go-delve/delve")
+	want1 := []byte("mod\tgithub.com/undoio/delve")
 	want2 := []byte("dep\tgithub.com/google/go-dap")
 	if !bytes.Contains(got, want1) || !bytes.Contains(got, want2) {
 		t.Errorf("got %s\nwant %v and %v in the output", got, want1, want2)
@@ -1123,7 +1123,7 @@ func TestStaticcheck(t *testing.T) {
 		t.Skip("staticcheck not installed")
 	}
 	// default checks minus SA1019 which complains about deprecated identifiers, which change between versions of Go.
-	args := []string{"-tests=false", "-checks=all,-SA1019,-ST1000,-ST1003,-ST1016,-S1021,-ST1023", "github.com/go-delve/delve/..."}
+	args := []string{"-tests=false", "-checks=all,-SA1019,-ST1000,-ST1003,-ST1016,-S1021,-ST1023", "github.com/undoio/delve/..."}
 	// * SA1019 is disabled because new deprecations get added on every version
 	//   of Go making the output of staticcheck inconsistent depending on the
 	//   version of Go used to run it.

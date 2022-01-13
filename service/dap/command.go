@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/config"
+	"github.com/undoio/delve/pkg/config"
 )
 
 func (s *Session) delveCmd(goid, frame int, cmdstr string) (string, error) {
