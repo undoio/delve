@@ -1,6 +1,6 @@
 package dap
 
-import "github.com/go-delve/delve/pkg/proc"
+import "github.com/undoio/delve/pkg/proc"
 
 const startHandle = 1000
 
@@ -19,7 +19,7 @@ type fullyQualifiedVariable struct {
 	// A way to load this variable by either using all names in the hierarchic
 	// sequence above this variable (most readable when referenced by the UI)
 	// if available or a special expression based on:
-	// https://github.com/go-delve/delve/blob/master/Documentation/api/ClientHowto.md#loading-more-of-a-variable
+	// https://github.com/undoio/delve/blob/master/Documentation/api/ClientHowto.md#loading-more-of-a-variable
 	// Empty if the variable cannot or should not be reloaded.
 	fullyQualifiedNameOrExpr string
 	// True if this represents variable scope

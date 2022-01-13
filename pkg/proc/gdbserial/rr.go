@@ -11,8 +11,8 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 const (

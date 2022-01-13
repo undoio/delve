@@ -3,9 +3,9 @@ package main
 import (
 	"os"
 
-	"github.com/go-delve/delve/cmd/dlv/cmds"
-	"github.com/go-delve/delve/pkg/version"
 	"github.com/sirupsen/logrus"
+	"github.com/undoio/delve/cmd/dlv/cmds"
+	"github.com/undoio/delve/pkg/version"
 )
 
 // Build is the git sha of this binaries build.
