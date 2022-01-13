@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/go-delve/delve/pkg/dwarf"
+	"github.com/undoio/delve/pkg/dwarf"
 )
 
 // DebugAddrSection represents the debug_addr section of DWARFv5.

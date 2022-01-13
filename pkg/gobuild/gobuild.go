@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/pkg/logflags"
 )
 
 // Remove the file at path and issue a warning to stderr if this fails.

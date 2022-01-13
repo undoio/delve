@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/internal/lru"
+	"github.com/undoio/delve/pkg/internal/lru"
 )
 
 func TestCache_ZeroCapacity(t *testing.T) {
