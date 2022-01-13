@@ -2,7 +2,7 @@ package proc
 
 import (
 	"errors"
-	"github.com/go-delve/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/op"
 )
 
 // Thread represents a thread.

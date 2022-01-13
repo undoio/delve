@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/terminal/colorize"
 	"github.com/mattn/go-isatty"
+	"github.com/undoio/delve/pkg/terminal/colorize"
 )
 
 // transcriptWriter writes to a pagingWriter and also, optionally, to a

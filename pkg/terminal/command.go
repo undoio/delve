@@ -25,12 +25,12 @@ import (
 	"text/tabwriter"
 
 	"github.com/cosiner/argv"
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/pkg/locspec"
-	"github.com/go-delve/delve/pkg/proc/debuginfod"
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/pkg/locspec"
+	"github.com/undoio/delve/pkg/proc/debuginfod"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/rpc2"
 )
 
 const optimizedFunctionWarning = "Warning: debugging optimized function"
