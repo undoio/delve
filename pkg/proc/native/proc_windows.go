@@ -9,9 +9,9 @@ import (
 
 	sys "golang.org/x/sys/windows"
 
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
-	"github.com/go-delve/delve/pkg/proc/winutil"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/internal/ebpf"
+	"github.com/undoio/delve/pkg/proc/winutil"
 )
 
 // osProcessDetails holds Windows specific information.
