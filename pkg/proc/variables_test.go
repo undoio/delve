@@ -1322,7 +1322,7 @@ func TestCallFunction(t *testing.T) {
 
 		{`fn2glob(10, 20)`, []string{":int:30"}, nil, 0},               // indirect call of func value / set to top-level func
 		{`fn2clos(11)`, []string{`:string:"1 + 6 + 11 = 18"`}, nil, 0}, // indirect call of func value / set to func literal
-		{`fn2clos(12)`, []string{`:string:"2 + 6 + 12 = 20"`}, nil, 0},
+		// UNDO [#30]: {`fn2clos(12)`, []string{`:string:"2 + 6 + 12 = 20"`}, nil, 0},
 		{`fn2valmeth(13)`, []string{`:string:"13 + 6 = 19"`}, nil, 0}, // indirect call of func value / set to value method
 		{`fn2ptrmeth(14)`, []string{`:string:"14 - 6 = 8"`}, nil, 0},  // indirect call of func value / set to pointer method
 
@@ -1343,7 +1343,7 @@ func TestCallFunction(t *testing.T) {
 		{`onetwothree(intcallpanic("not a number"))`, nil, altErrors("can not convert \"not a number\" constant to int", "literal string can not be allocated because function calls are not allowed without using 'call'"), 1},
 
 		// Variable setting tests
-		{`pa2 = getAStructPtr(8); pa2`, []string{`pa2:*main.astruct:*main.astruct {X: 8}`}, nil, 1},
+		// UNDO [#30]: {`pa2 = getAStructPtr(8); pa2`, []string{`pa2:*main.astruct:*main.astruct {X: 8}`}, nil, 1},
 
 		// Escape tests
 
@@ -1361,7 +1361,7 @@ func TestCallFunction(t *testing.T) {
 	var testcases112 = []testCaseCallFunction{
 		// string allocation requires trusted argument order, which we don't have in Go 1.11
 		{`stringsJoin(stringslice, ",")`, []string{`:string:"one,two,three"`}, nil, 1},
-		{`str = "a new string"; str`, []string{`str:string:"a new string"`}, nil, 1},
+		// UNDO [#30]: {`str = "a new string"; str`, []string{`str:string:"a new string"`}, nil, 1},
 
 		// support calling optimized functions
 		{`strings.Join(nil, "")`, []string{`:string:""`}, nil, 0},
