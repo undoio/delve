@@ -1,8 +1,8 @@
 package fbsdutil
 
 import (
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/amd64util"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/amd64util"
 )
 
 // AMD64Registers implements the proc.Registers interface for the native/freebsd
