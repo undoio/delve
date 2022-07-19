@@ -9,7 +9,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/service/api"
 )
 
 func verifyBinaryFormat(exePath string) error {
