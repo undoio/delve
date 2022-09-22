@@ -1,77 +1,43 @@
 package gdbserial_test
 
 import (
-	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 
-	"github.com/undoio/delve/pkg/logflags"
 	"github.com/undoio/delve/pkg/proc"
 	"github.com/undoio/delve/pkg/proc/gdbserial"
 	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
-func TestMain(m *testing.M) {
-	var logConf string
-	flag.StringVar(&logConf, "log", "", "configures logging")
-	flag.Parse()
-	logflags.Setup(logConf != "", logConf, "")
-	os.Exit(protest.RunTestsWithFixtures(m))
-}
-
-func withTestRecording(name string, t testing.TB, fn func(grp *proc.TargetGroup, fixture protest.Fixture)) {
+func withUndoRecording(name string, t testing.TB, fn func(grp *proc.TargetGroup, fixture protest.Fixture)) {
 	fixture := protest.BuildFixture(name, 0)
 	protest.MustHaveRecordingAllowed(t)
-	if path, _ := exec.LookPath("rr"); path == "" {
-		t.Skip("test skipped, rr not found")
+	if err := gdbserial.UndoIsAvailable(); err != nil {
+		t.Skip("test skipped, Undo tools not found")
 	}
 	t.Log("recording")
-	p, tracedir, err := gdbserial.RecordAndReplay([]string{fixture.Path}, ".", true, []string{}, [3]string{})
+	p, recording, err := gdbserial.UndoRecordAndReplay([]string{fixture.Path}, ".", true, []string{}, [3]string{})
 	if err != nil {
 		t.Fatal("Launch():", err)
 	}
-	t.Logf("replaying %q", tracedir)
+	t.Logf("replaying %q", recording)
 
 	grp := proc.NewGroup(p)
 
-	defer grp.Detach(true)
+	defer func() {
+		grp.Detach(true)
+		if recording != "" {
+			os.Remove(recording)
+		}
+	}()
 
 	fn(grp, fixture)
 }
 
-func assertNoError(err error, t testing.TB, s string) {
-	if err != nil {
-		_, file, line, _ := runtime.Caller(1)
-		fname := filepath.Base(file)
-		t.Fatalf("failed assertion at %s:%d: %s - %s\n", fname, line, s, err)
-	}
-}
-
-func setFunctionBreakpoint(p *proc.Target, t *testing.T, fname string) *proc.Breakpoint {
-	_, f, l, _ := runtime.Caller(1)
-	f = filepath.Base(f)
-
-	addrs, err := proc.FindFunctionLocation(p, fname, 0)
-	if err != nil {
-		t.Fatalf("%s:%d: FindFunctionLocation(%s): %v", f, l, fname, err)
-	}
-	if len(addrs) != 1 {
-		t.Fatalf("%s:%d: setFunctionBreakpoint(%s): too many results %v", f, l, fname, addrs)
-	}
-	bp, err := p.SetBreakpoint(0, addrs[0], proc.UserBreakpoint, nil)
-	if err != nil {
-		t.Fatalf("%s:%d: FindFunctionLocation(%s): %v", f, l, fname, err)
-	}
-	return bp
-}
-
-func TestRestartAfterExit(t *testing.T) {
+func TestUndoRestartAfterExit(t *testing.T) {
 	protest.AllowRecording(t)
-	withTestRecording("testnextprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
+	withUndoRecording("testnextprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
 		p := grp.Selected
 		setFunctionBreakpoint(p, t, "main.main")
 		assertNoError(grp.Continue(), t, "Continue")
@@ -97,9 +63,9 @@ func TestRestartAfterExit(t *testing.T) {
 	})
 }
 
-func TestRestartDuringStop(t *testing.T) {
+func TestUndoRestartDuringStop(t *testing.T) {
 	protest.AllowRecording(t)
-	withTestRecording("testnextprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
+	withUndoRecording("testnextprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
 		p := grp.Selected
 		setFunctionBreakpoint(p, t, "main.main")
 		assertNoError(grp.Continue(), t, "Continue")
@@ -121,27 +87,9 @@ func TestRestartDuringStop(t *testing.T) {
 	})
 }
 
-func setFileBreakpoint(p *proc.Target, t *testing.T, fixture protest.Fixture, lineno int) *proc.Breakpoint {
-	_, f, l, _ := runtime.Caller(1)
-	f = filepath.Base(f)
-
-	addrs, err := proc.FindFileLocation(p, fixture.Source, lineno)
-	if err != nil {
-		t.Fatalf("%s:%d: FindFileLocation(%s, %d): %v", f, l, fixture.Source, lineno, err)
-	}
-	if len(addrs) != 1 {
-		t.Fatalf("%s:%d: setFileLineBreakpoint(%s, %d): too many results %v", f, l, fixture.Source, lineno, addrs)
-	}
-	bp, err := p.SetBreakpoint(int(addrs[0]), addrs[0], proc.UserBreakpoint, nil)
-	if err != nil {
-		t.Fatalf("%s:%d: SetBreakpoint: %v", f, l, err)
-	}
-	return bp
-}
-
-func TestReverseBreakpointCounts(t *testing.T) {
+func TestUndoReverseBreakpointCounts(t *testing.T) {
 	protest.AllowRecording(t)
-	withTestRecording("bpcountstest", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
+	withUndoRecording("bpcountstest", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
 		p := grp.Selected
 		endbp := setFileBreakpoint(p, t, fixture, 28)
 		assertNoError(grp.Continue(), t, "Continue()")
@@ -186,18 +134,9 @@ func TestReverseBreakpointCounts(t *testing.T) {
 	})
 }
 
-func getPosition(grp *proc.TargetGroup, t *testing.T) (when string, loc *proc.Location) {
-	var err error
-	when, err = grp.When()
-	assertNoError(err, t, "When")
-	loc, err = grp.Selected.CurrentThread().Location()
-	assertNoError(err, t, "Location")
-	return
-}
-
-func TestCheckpoints(t *testing.T) {
+func TestUndoCheckpoints(t *testing.T) {
 	protest.AllowRecording(t)
-	withTestRecording("continuetestprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
+	withUndoRecording("continuetestprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
 		p := grp.Selected
 		// Continues until start of main.main, record output of 'when'
 		bp := setFunctionBreakpoint(p, t, "main.main")
@@ -283,10 +222,10 @@ func TestCheckpoints(t *testing.T) {
 	})
 }
 
-func TestIssue1376(t *testing.T) {
+func TestUndoIssue1376(t *testing.T) {
 	// Backward Continue should terminate when it encounters the start of the process.
 	protest.AllowRecording(t)
-	withTestRecording("continuetestprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
+	withUndoRecording("continuetestprog", t, func(grp *proc.TargetGroup, fixture protest.Fixture) {
 		p := grp.Selected
 		bp := setFunctionBreakpoint(p, t, "main.main")
 		assertNoError(grp.Continue(), t, "Continue (forward)")

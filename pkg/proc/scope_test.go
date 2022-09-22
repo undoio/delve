@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc"
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 func TestScopeWithEscapedVariable(t *testing.T) {
@@ -23,6 +23,7 @@ func TestScopeWithEscapedVariable(t *testing.T) {
 		return
 	}
 
+	protest.AllowRecording(t)
 	withTestProcess("scopeescapevareval", t, func(p *proc.Target, fixture protest.Fixture) {
 		assertNoError(p.Continue(), t, "Continue")
 
@@ -72,6 +73,7 @@ func TestScope(t *testing.T) {
 
 	scopeChecks := getScopeChecks(scopetestPath, t)
 
+	protest.AllowRecording(t)
 	withTestProcess("scopetest", t, func(p *proc.Target, fixture protest.Fixture) {
 		for i := range scopeChecks {
 			setFileBreakpoint(p, t, fixture.Source, scopeChecks[i].line)
