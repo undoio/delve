@@ -11,11 +11,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/service/api"
 
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 var pnormalLoadConfig = proc.LoadConfig{
@@ -69,7 +69,7 @@ func assertVariable(t testing.TB, variable *proc.Variable, expected varTest) {
 }
 
 func evalScope(p *proc.Target) (*proc.EvalScope, error) {
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return proc.GoroutineScope(p, p.CurrentThread())
 	}
 	frame, err := findFirstNonRuntimeFrame(p)
@@ -158,7 +158,7 @@ func TestVariableEvaluation2(t *testing.T) {
 				}
 			}
 
-			if tc.alternate != "" && testBackend != "rr" {
+			if tc.alternate != "" && testBackend != "rr" && testBackend != "undo" {
 				assertNoError(setVariable(p, tc.name, tc.alternate), t, "SetVariable()")
 				variable, err = evalVariableWithCfg(p, tc.name, pnormalLoadConfig)
 				assertNoError(err, t, "EvalVariable()")
@@ -407,7 +407,7 @@ func TestLocalVariables(t *testing.T) {
 			var scope *proc.EvalScope
 			var err error
 
-			if testBackend == "rr" {
+			if testBackend == "rr" || testBackend == "undo" {
 				var frame proc.Stackframe
 				frame, err = findFirstNonRuntimeFrame(p)
 				if err == nil {
@@ -1033,18 +1033,18 @@ func TestPackageRenames(t *testing.T) {
 		{"req", true, `interface {}(*net/http.Request) *{Method: "amethod", …`, "", "interface {}", nil},
 
 		// Package name that doesn't match import path
-		{"iface3", true, `interface {}(*github.com/go-delve/delve/_fixtures/internal/dir0/renamedpackage.SomeType) *{A: true}`, "", "interface {}", nil},
+		{"iface3", true, `interface {}(*github.com/undoio/delve/_fixtures/internal/dir0/renamedpackage.SomeType) *{A: true}`, "", "interface {}", nil},
 
 		// Interfaces to anonymous types
-		{"dir0someType", true, "interface {}(*github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) *{X: 3}", "", "interface {}", nil},
-		{"dir1someType", true, "interface {}(github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType) {X: 1, Y: 2}", "", "interface {}", nil},
-		{"amap3", true, "interface {}(map[github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType]github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType) [{X: 4}: {X: 5, Y: 6}, ]", "", "interface {}", nil},
-		{"anarray", true, `interface {}([2]github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 1},{X: 2}]`, "", "interface {}", nil},
-		{"achan", true, `interface {}(chan github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) chan github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType 0/0`, "", "interface {}", nil},
-		{"aslice", true, `interface {}([]github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 3},{X: 4}]`, "", "interface {}", nil},
-		{"afunc", true, `interface {}(func(github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType, github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType)) main.main.func1`, "", "interface {}", nil},
-		{"astruct", true, `interface {}(*struct { A github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType; B github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType }) *{A: github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, B: github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType {X: 3}}`, "", "interface {}", nil},
-		{"iface2iface", true, `interface {}(*interface { AMethod(int) int; AnotherMethod(int) int }) **github.com/go-delve/delve/_fixtures/internal/dir0/pkg.SomeType {X: 4}`, "", "interface {}", nil},
+		{"dir0someType", true, "interface {}(*github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) *{X: 3}", "", "interface {}", nil},
+		{"dir1someType", true, "interface {}(github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType) {X: 1, Y: 2}", "", "interface {}", nil},
+		{"amap3", true, "interface {}(map[github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType]github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType) [{X: 4}: {X: 5, Y: 6}, ]", "", "interface {}", nil},
+		{"anarray", true, `interface {}([2]github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 1},{X: 2}]`, "", "interface {}", nil},
+		{"achan", true, `interface {}(chan github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) chan github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType 0/0`, "", "interface {}", nil},
+		{"aslice", true, `interface {}([]github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType) [{X: 3},{X: 4}]`, "", "interface {}", nil},
+		{"afunc", true, `interface {}(func(github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType, github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType)) main.main.func1`, "", "interface {}", nil},
+		{"astruct", true, `interface {}(*struct { A github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType; B github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType }) *{A: github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, B: github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType {X: 3}}`, "", "interface {}", nil},
+		{"iface2iface", true, `interface {}(*interface { AMethod(int) int; AnotherMethod(int) int }) **github.com/undoio/delve/_fixtures/internal/dir0/pkg.SomeType {X: 4}`, "", "interface {}", nil},
 
 		{`"dir0/pkg".A`, false, "0", "", "int", nil},
 		{`"dir1/pkg".A`, false, "1", "", "int", nil},
@@ -1061,7 +1061,7 @@ func TestPackageRenames(t *testing.T) {
 	}
 
 	testcases1_9 := []varTest{
-		{"astruct2", true, `interface {}(*struct { github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{SomeType: github.com/go-delve/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`, "", "interface {}", nil},
+		{"astruct2", true, `interface {}(*struct { github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType; X int }) *{SomeType: github.com/undoio/delve/_fixtures/internal/dir1/pkg.SomeType {X: 1, Y: 2}, X: 10}`, "", "interface {}", nil},
 	}
 
 	testcases1_13 := []varTest{
@@ -1110,6 +1110,7 @@ func TestConstants(t *testing.T) {
 		// Not supported on 1.9 or earlier
 		t.Skip("constants added in go 1.10")
 	}
+	protest.AllowRecording(t)
 	withTestProcess("consts", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue")
 		for _, testcase := range testcases {
@@ -1121,6 +1122,7 @@ func TestConstants(t *testing.T) {
 }
 
 func TestIssue1075(t *testing.T) {
+	protest.AllowRecording(t)
 	withTestProcess("clientdo", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		setFunctionBreakpoint(p, t, "net/http.(*Client).Do")
 		assertNoError(grp.Continue(), t, "Continue()")
@@ -1185,7 +1187,7 @@ func TestCallFunction(t *testing.T) {
 
 		{`fn2glob(10, 20)`, []string{":int:30"}, nil},               // indirect call of func value / set to top-level func
 		{`fn2clos(11)`, []string{`:string:"1 + 6 + 11 = 18"`}, nil}, // indirect call of func value / set to func literal
-		{`fn2clos(12)`, []string{`:string:"2 + 6 + 12 = 20"`}, nil},
+		// UNDO [#30]: {`fn2clos(12)`, []string{`:string:"2 + 6 + 12 = 20"`}, nil},
 		{`fn2valmeth(13)`, []string{`:string:"13 + 6 = 19"`}, nil}, // indirect call of func value / set to value method
 		{`fn2ptrmeth(14)`, []string{`:string:"14 - 6 = 8"`}, nil},  // indirect call of func value / set to pointer method
 
@@ -1206,7 +1208,7 @@ func TestCallFunction(t *testing.T) {
 		{`onetwothree(intcallpanic("not a number"))`, nil, errors.New("error evaluating \"intcallpanic(\\\"not a number\\\")\" as argument n in function main.onetwothree: can not convert \"not a number\" constant to int")},
 
 		// Variable setting tests
-		{`pa2 = getAStructPtr(8); pa2`, []string{`pa2:*main.astruct:*main.astruct {X: 8}`}, nil},
+		// UNDO [#30]: {`pa2 = getAStructPtr(8); pa2`, []string{`pa2:*main.astruct:*main.astruct {X: 8}`}, nil},
 
 		// Escape tests
 
@@ -1224,7 +1226,7 @@ func TestCallFunction(t *testing.T) {
 	var testcases112 = []testCaseCallFunction{
 		// string allocation requires trusted argument order, which we don't have in Go 1.11
 		{`stringsJoin(stringslice, ",")`, []string{`:string:"one,two,three"`}, nil},
-		{`str = "a new string"; str`, []string{`str:string:"a new string"`}, nil},
+		// UNDO [#30]: {`str = "a new string"; str`, []string{`str:string:"a new string"`}, nil},
 
 		// support calling optimized functions
 		{`strings.Join(nil, "")`, []string{`:string:""`}, nil},
@@ -1398,6 +1400,7 @@ func testCallFunction(t *testing.T, grp *proc.TargetGroup, p *proc.Target, tc te
 
 func TestIssue1531(t *testing.T) {
 	// Go 1.12 introduced a change to the map representation where empty cells can be marked with 1 instead of just 0.
+	protest.AllowRecording(t)
 	withTestProcess("issue1531", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 		assertNoError(grp.Continue(), t, "Continue()")
 
@@ -1465,9 +1468,9 @@ func TestPluginVariables(t *testing.T) {
 		setFileBreakpoint(p, t, fixture.Source, 41)
 		assertNoError(grp.Continue(), t, "Continue 1")
 
-		bp := setFunctionBreakpoint(p, t, "github.com/go-delve/delve/_fixtures/plugin2.TypesTest")
+		bp := setFunctionBreakpoint(p, t, "github.com/undoio/delve/_fixtures/plugin2.TypesTest")
 		t.Logf("bp.Addr = %#x", bp.Addr)
-		setFunctionBreakpoint(p, t, "github.com/go-delve/delve/_fixtures/plugin2.aIsNotNil")
+		setFunctionBreakpoint(p, t, "github.com/undoio/delve/_fixtures/plugin2.aIsNotNil")
 
 		for _, image := range p.BinInfo().Images {
 			t.Logf("%#x %s\n", image.StaticBase, image.Path)
@@ -1483,7 +1486,7 @@ func TestPluginVariables(t *testing.T) {
 		var plugin2AFound, mainExeGlobalFound bool
 		for _, v := range allvars {
 			switch v.Name {
-			case "github.com/go-delve/delve/_fixtures/plugin2.A":
+			case "github.com/undoio/delve/_fixtures/plugin2.A":
 				plugin2AFound = true
 			case "main.ExeGlobal":
 				mainExeGlobalFound = true
@@ -1499,12 +1502,12 @@ func TestPluginVariables(t *testing.T) {
 		// read interface variable, inside plugin code, with a concrete type defined in the executable
 		vs, err := evalVariableWithCfg(p, "s", pnormalLoadConfig)
 		assertNoError(err, t, "Eval(s)")
-		assertVariable(t, vs, varTest{"s", true, `github.com/go-delve/delve/_fixtures/internal/pluginsupport.Something(*main.asomething) *{n: 2}`, ``, `github.com/go-delve/delve/_fixtures/internal/pluginsupport.Something`, nil})
+		assertVariable(t, vs, varTest{"s", true, `github.com/undoio/delve/_fixtures/internal/pluginsupport.Something(*main.asomething) *{n: 2}`, ``, `github.com/undoio/delve/_fixtures/internal/pluginsupport.Something`, nil})
 
 		// test that the concrete type -> interface{} conversion works across plugins (mostly tests proc.dwarfToRuntimeType)
 		assertNoError(setVariable(p, "plugin2.A", "main.ExeGlobal"), t, "setVariable(plugin2.A = main.ExeGlobal)")
 		assertNoError(grp.Continue(), t, "Continue 3")
-		assertCurrentLocationFunction(p, t, "github.com/go-delve/delve/_fixtures/plugin2.aIsNotNil")
+		assertCurrentLocationFunction(p, t, "github.com/undoio/delve/_fixtures/plugin2.aIsNotNil")
 		vstr, err := evalVariableWithCfg(p, "str", pnormalLoadConfig)
 		assertNoError(err, t, "Eval(str)")
 		assertVariable(t, vstr, varTest{"str", true, `"success"`, ``, `string`, nil})
@@ -1516,7 +1519,7 @@ func TestPluginVariables(t *testing.T) {
 		// read interface variable, inside executable code, with a concrete type defined in a plugin
 		vb, err := evalVariableWithCfg(p, "b", pnormalLoadConfig)
 		assertNoError(err, t, "Eval(b)")
-		assertVariable(t, vb, varTest{"b", true, `github.com/go-delve/delve/_fixtures/internal/pluginsupport.SomethingElse(*github.com/go-delve/delve/_fixtures/plugin2.asomethingelse) *{x: 1, y: 4}`, ``, `github.com/go-delve/delve/_fixtures/internal/pluginsupport.SomethingElse`, nil})
+		assertVariable(t, vb, varTest{"b", true, `github.com/undoio/delve/_fixtures/internal/pluginsupport.SomethingElse(*github.com/undoio/delve/_fixtures/plugin2.asomethingelse) *{x: 1, y: 4}`, ``, `github.com/undoio/delve/_fixtures/internal/pluginsupport.SomethingElse`, nil})
 	})
 }
 

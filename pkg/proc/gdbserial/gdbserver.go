@@ -23,6 +23,8 @@
 //    macOS.
 //  * mozilla rr: a stub that records the full execution of a program
 //    and can then play it back.
+//  * undo: a stub that records the full execution of a program
+//    and can then play it back.
 //
 // Implementations of the protocol vary wildly between stubs, while there is
 // a command to query the stub about supported features (qSupported) this
@@ -62,7 +64,6 @@
 package gdbserial
 
 import (
-	"bytes"
 	"debug/macho"
 	"encoding/binary"
 	"errors"
@@ -77,14 +78,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/elfwriter"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
-	"github.com/go-delve/delve/pkg/proc/linutil"
-	"github.com/go-delve/delve/pkg/proc/macutil"
 	isatty "github.com/mattn/go-isatty"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/elfwriter"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/internal/ebpf"
+	"github.com/undoio/delve/pkg/proc/linutil"
+	"github.com/undoio/delve/pkg/proc/macutil"
 )
 
 const (
@@ -159,14 +160,15 @@ type gdbProcess struct {
 	threadStopInfo bool   // true if the stub supports qThreadStopInfo
 	tracedir       string // if attached to rr the path to the trace directory
 
-	loadGInstrAddr uint64 // address of the g loading instruction, zero if we couldn't allocate it
-
 	breakpointKind int // breakpoint kind to pass to 'z' and 'Z' when creating software breakpoints
 
 	process  *os.Process
 	waitChan chan *os.ProcessState
 
 	onDetach func() // called after a successful detach
+
+	localCheckpointLastId int
+	localCheckpoints      map[int]proc.Checkpoint
 }
 
 var _ proc.RecordingManipulationInternal = &gdbProcess{}
@@ -240,6 +242,9 @@ func newProcess(process *os.Process) *gdbProcess {
 		gcmdok:         true,
 		threadStopInfo: true,
 		process:        process,
+
+		localCheckpointLastId: 1,
+		localCheckpoints:      make(map[int]proc.Checkpoint),
 	}
 
 	switch p.bi.Arch.Name {
@@ -348,24 +353,6 @@ func (p *gdbProcess) Connect(conn net.Conn, path string, pid int, debugInfoDirs 
 	tgt, err := p.initialize(path, debugInfoDirs, stopReason)
 	if err != nil {
 		return nil, err
-	}
-
-	if p.bi.Arch.Name != "arm64" {
-		// None of the stubs we support returns the value of fs_base or gs_base
-		// along with the registers, therefore we have to resort to executing a MOV
-		// instruction on the inferior to find out where the G struct of a given
-		// thread is located.
-		// Here we try to allocate some memory on the inferior which we will use to
-		// store the MOV instruction.
-		// If the stub doesn't support memory allocation reloadRegisters will
-		// overwrite some existing memory to store the MOV.
-		if ginstr, err := p.loadGInstr(); err == nil {
-			if addr, err := p.conn.allocMemory(256); err == nil {
-				if _, err := p.conn.writeMemory(addr, ginstr); err == nil {
-					p.loadGInstrAddr = addr
-				}
-			}
-		}
 	}
 
 	return tgt, nil
@@ -1075,6 +1062,16 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 		return nil, proc.ErrNotRecorded
 	}
 
+	// Is this a checkpoint on a server using local checkpoints?
+	if len(pos) > 1 && pos[:1] == "c" && p.conn.isUndoServer {
+		cpid, _ := strconv.Atoi(pos[1:])
+		checkpoint, exists := p.localCheckpoints[cpid]
+		if !exists {
+			return nil, errors.New("Checkpoint not found")
+		}
+		pos = checkpoint.When
+	}
+
 	p.exited = false
 	p.almostExited = false
 
@@ -1091,9 +1088,11 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 
 	// for some reason we have to send a vCont;c after a vRun to make rr behave
 	// properly, because that's what gdb does.
-	_, err = p.conn.resume(cctx, nil, nil)
-	if err != nil {
-		return nil, err
+	if !p.conn.isUndoServer {
+		_, err = p.conn.resume(cctx, nil, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	err = p.updateThreadList(&threadUpdater{p: p})
@@ -1110,17 +1109,27 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 	return p.currentThread, p.setCurrentBreakpoints()
 }
 
-// When executes the 'when' command for the Mozilla RR backend.
+// When executes the 'when' command for the Mozilla RR/Undo backends.
 // This command will return rr's internal event number.
 func (p *gdbProcess) When() (string, error) {
 	if p.tracedir == "" {
 		return "", proc.ErrNotRecorded
 	}
-	event, err := p.conn.qRRCmd("when")
-	if err != nil {
-		return "", err
+	result := ""
+	if p.conn.isUndoServer {
+		extent, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return "", err
+		}
+		result = extent
+	} else {
+		event, err := p.conn.qRRCmd("when")
+		if err != nil {
+			return "", err
+		}
+		result = strings.TrimSpace(event)
 	}
-	return strings.TrimSpace(event), nil
+	return result, nil
 }
 
 const (
@@ -1132,6 +1141,19 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 	if p.tracedir == "" {
 		return -1, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		cpid := p.localCheckpointLastId
+		p.localCheckpointLastId++
+		when, err := p.conn.undoCmd("get_time")
+		if err != nil {
+			return -1, err
+		}
+		p.localCheckpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+		return cpid, nil
+	}
+
 	resp, err := p.conn.qRRCmd("checkpoint", where)
 	if err != nil {
 		return -1, err
@@ -1160,6 +1182,16 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		r := make([]proc.Checkpoint, 0, len(p.localCheckpoints))
+		for _, cp := range p.localCheckpoints {
+			r = append(r, cp)
+		}
+		return r, nil
+	}
+
 	resp, err := p.conn.qRRCmd("info checkpoints")
 	if err != nil {
 		return nil, err
@@ -1190,6 +1222,14 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 	if p.tracedir == "" {
 		return proc.ErrNotRecorded
 	}
+
+	// Handle locally managed checkpoints first
+	if p.conn.isUndoServer {
+		delete(p.localCheckpoints, id)
+		// We don't care if it didn't exist
+		return nil
+	}
+
 	resp, err := p.conn.qRRCmd("delete checkpoint", strconv.Itoa(id))
 	if err != nil {
 		return err
@@ -1231,6 +1271,16 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 	}
 	if p.conn.direction != proc.Forward {
 		return nil, ErrStartCallInjectionBackwards
+	}
+
+	if p.conn.isUndoServer {
+		_, err := p.conn.undoCmd("set_debuggee_volatile", "1")
+		if err != nil {
+			return nil, err
+		}
+		return func() {
+			_, _ = p.conn.undoCmd("set_debuggee_volatile", "0")
+		}, nil
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target
@@ -1570,31 +1620,6 @@ func (t *gdbThread) Blocked() bool {
 	}
 }
 
-// loadGInstr returns the correct MOV instruction for the current
-// OS/architecture that can be executed to load the address of G from an
-// inferior's thread.
-func (p *gdbProcess) loadGInstr() ([]byte, error) {
-	var op []byte
-	switch p.bi.GOOS {
-	case "windows", "darwin", "freebsd":
-		// mov rcx, QWORD PTR gs:{uint32(off)}
-		op = []byte{0x65, 0x48, 0x8b, 0x0c, 0x25}
-	case "linux":
-		// mov rcx,QWORD PTR fs:{uint32(off)}
-		op = []byte{0x64, 0x48, 0x8B, 0x0C, 0x25}
-	default:
-		panic("unsupported operating system attempting to find Goroutine on Thread")
-	}
-	offset, err := p.bi.GStructOffset(p.Memory())
-	if err != nil {
-		return nil, err
-	}
-	buf := &bytes.Buffer{}
-	buf.Write(op)
-	binary.Write(buf, binary.LittleEndian, uint32(offset))
-	return buf.Bytes(), nil
-}
-
 func (p *gdbProcess) MemoryMap() ([]proc.MemoryMapEntry, error) {
 	r := []proc.MemoryMapEntry{}
 	addr := uint64(0)
@@ -1675,15 +1700,6 @@ func (t *gdbThread) reloadRegisters() error {
 		}
 	}
 
-	if t.p.bi.GOOS == "linux" {
-		if reg, hasFsBase := t.regs.regs[t.p.regnames.FsBase]; hasFsBase {
-			t.regs.gaddr = 0
-			t.regs.tls = binary.LittleEndian.Uint64(reg.value)
-			t.regs.hasgaddr = false
-			return nil
-		}
-	}
-
 	if t.p.bi.Arch.Name == "arm64" {
 		// no need to play around with the GInstr on ARM64 because
 		// the G addr is stored in a register
@@ -1692,10 +1708,7 @@ func (t *gdbThread) reloadRegisters() error {
 		t.regs.hasgaddr = true
 		t.regs.tls = 0
 	} else {
-		if t.p.loadGInstrAddr > 0 {
-			return t.reloadGAlloc()
-		}
-		return t.reloadGAtPC()
+		return t.readG()
 	}
 
 	return nil
@@ -1745,143 +1758,6 @@ func (t *gdbThread) readSomeRegisters(regNames ...string) error {
 		}
 	}
 	return nil
-}
-
-// reloadGAtPC overwrites the instruction that the thread is stopped at with
-// the MOV instruction used to load current G, executes this single
-// instruction and then puts everything back the way it was.
-func (t *gdbThread) reloadGAtPC() error {
-	movinstr, err := t.p.loadGInstr()
-	if err != nil {
-		return err
-	}
-
-	if t.Blocked() {
-		t.regs.tls = 0
-		t.regs.gaddr = 0
-		t.regs.hasgaddr = true
-		return nil
-	}
-
-	cx := t.regs.CX()
-	pc := t.regs.PC()
-
-	// We are partially replicating the code of GdbserverThread.stepInstruction
-	// here.
-	// The reason is that lldb-server has a bug with writing to memory and
-	// setting/clearing breakpoints to that same memory which we must work
-	// around by clearing and re-setting the breakpoint in a specific sequence
-	// with the memory writes.
-	// Additionally all breakpoints in [pc, pc+len(movinstr)] need to be removed
-	for addr, bp := range t.p.breakpoints.M {
-		if bp.WatchType != 0 {
-			continue
-		}
-		if addr >= pc && addr <= pc+uint64(len(movinstr)) {
-			err := t.p.conn.clearBreakpoint(addr, swBreakpoint, t.p.breakpointKind)
-			if err != nil {
-				return err
-			}
-			defer t.p.conn.setBreakpoint(addr, swBreakpoint, t.p.breakpointKind)
-		}
-	}
-
-	savedcode := make([]byte, len(movinstr))
-	_, err = t.p.ReadMemory(savedcode, pc)
-	if err != nil {
-		return err
-	}
-
-	_, err = t.p.WriteMemory(pc, movinstr)
-	if err != nil {
-		return err
-	}
-
-	defer func() {
-		_, err0 := t.p.WriteMemory(pc, savedcode)
-		if err == nil {
-			err = err0
-		}
-		t.regs.setPC(pc)
-		t.regs.setCX(cx)
-		err1 := t.writeSomeRegisters(t.p.regnames.PC, t.p.regnames.CX)
-		if err == nil {
-			err = err1
-		}
-	}()
-
-	err = t.p.conn.step(t, nil, true)
-	if err != nil {
-		if err == errThreadBlocked {
-			t.regs.tls = 0
-			t.regs.gaddr = 0
-			t.regs.hasgaddr = true
-			return nil
-		}
-		return err
-	}
-
-	if err := t.readSomeRegisters(t.p.regnames.PC, t.p.regnames.CX); err != nil {
-		return err
-	}
-
-	t.regs.gaddr = t.regs.CX()
-	t.regs.hasgaddr = true
-
-	return err
-}
-
-// reloadGAlloc makes the specified thread execute one instruction stored at
-// t.p.loadGInstrAddr then restores the value of the thread's registers.
-// t.p.loadGInstrAddr must point to valid memory on the inferior, containing
-// a MOV instruction that loads the address of the current G in the RCX
-// register.
-func (t *gdbThread) reloadGAlloc() error {
-	if t.Blocked() {
-		t.regs.tls = 0
-		t.regs.gaddr = 0
-		t.regs.hasgaddr = true
-		return nil
-	}
-
-	cx := t.regs.CX()
-	pc := t.regs.PC()
-
-	t.regs.setPC(t.p.loadGInstrAddr)
-	if err := t.writeSomeRegisters(t.p.regnames.PC); err != nil {
-		return err
-	}
-
-	var err error
-
-	defer func() {
-		t.regs.setPC(pc)
-		t.regs.setCX(cx)
-		err1 := t.writeSomeRegisters(t.p.regnames.PC, t.p.regnames.CX)
-		if err == nil {
-			err = err1
-		}
-	}()
-
-	err = t.p.conn.step(t, nil, true)
-	if err != nil {
-		if err == errThreadBlocked {
-			t.regs.tls = 0
-			t.regs.gaddr = 0
-			t.regs.hasgaddr = true
-			return nil
-		}
-		return err
-	}
-
-	if err := t.readSomeRegisters(t.p.regnames.CX); err != nil {
-		return err
-	}
-
-	t.regs.gaddr = t.regs.CX()
-	t.regs.hasgaddr = true
-
-	return err
 }
 
 func (t *gdbThread) clearBreakpointState() {
@@ -2139,5 +2015,49 @@ func machTargetExcToError(sig uint8) error {
 	case 0x96:
 		return errors.New("breakpoint exception")
 	}
+	return nil
+}
+
+// readG reads the G pointer on x86 by peeking the word before the TLS pointer.
+func (t *gdbThread) readG() error {
+	var regnum int
+
+	switch t.p.bi.GOOS {
+	case "windows":
+	case "darwin":
+		regnum = 59 // gs_base
+	case "linux":
+		regnum = 58 // fs_base
+	default:
+		panic("unsupported operating system attempting to find Goroutine on Thread")
+	}
+
+	wordSize := t.p.bi.Arch.PtrSize()
+	tls := make([]byte, wordSize)
+	err := t.p.conn.readRegister(t.strID, regnum, tls)
+	if err != nil {
+		return err
+	}
+
+	data := make([]byte, wordSize)
+	tlsaddr := binary.LittleEndian.Uint64(tls)
+	if tlsaddr == 0 {
+		t.regs.tls = 0
+		t.regs.gaddr = 0
+		t.regs.hasgaddr = true
+		return nil
+	}
+
+	len, err := t.p.ReadMemory(data, tlsaddr-uint64(wordSize))
+	if err != nil {
+		return err
+	}
+	if len != wordSize {
+		return fmt.Errorf("too little data: only %d bytes", len)
+	}
+
+	t.regs.tls = tlsaddr
+	t.regs.gaddr = binary.LittleEndian.Uint64(data)
+	t.regs.hasgaddr = true
 	return nil
 }
