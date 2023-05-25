@@ -13,7 +13,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/undoio/delve/pkg/logflags"
@@ -807,10 +806,6 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 			}
 		}
 
-		if syscall.Signal(sig) == syscall.SIGCHLD {
-			// FIXME get exit code
-			return false, stopPacket{}, proc.ErrProcessExited{Pid: conn.pid, Status: 0}
-		}
 		return false, sp, nil
 
 	case 'W', 'X':

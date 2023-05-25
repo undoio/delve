@@ -872,7 +872,13 @@ continueLoop:
 		trapthread, atstart, shouldStop, shouldExitErr = p.handleThreadSignals(cctx, trapthread)
 		if shouldExitErr {
 			p.almostExited = true
-			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}
+
+			exit_code := 0
+			if p.conn.isUndoServer {
+				// Retrieve the exit code (if applicable, else zero) from udbserver.
+				exit_code = UndoGetExitCode(p)
+			}
+			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid, Status: exit_code}
 		}
 		if shouldStop {
 			break continueLoop
@@ -941,7 +947,7 @@ func (p *gdbProcess) handleThreadSignals(cctx *proc.ContinueOnceContext, trapthr
 			}
 		case breakpointSignal: // breakpoint
 			isStopSignal = true
-		case childSignal: // stop on debugserver but SIGCHLD on lldb-server/linux
+		case childSignal: // stop on debugserver or udbserver but SIGCHLD on lldb-server/linux
 			if p.conn.isDebugserver {
 				isStopSignal = true
 			}
@@ -976,6 +982,18 @@ func (p *gdbProcess) handleThreadSignals(cctx *proc.ContinueOnceContext, trapthr
 
 		default:
 			// any other signal is always propagated to inferior
+		}
+
+		if p.conn.isUndoServer && UndoAtEndOfHistory(p) {
+			// TODO: find a different way of indicating end of history as opposed to
+			// actual process exit.
+			//
+			// TODO: find a different way of indicating the start of history (currently
+			// registers as a "hardcoded breakpoint") - should we use the atstart flag
+			// that rr uses somehow?.
+
+			isStopSignal = true
+			shouldExitErr = true
 		}
 
 		if isStopSignal {

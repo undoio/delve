@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/undoio/delve/pkg/proc"
 )
@@ -157,4 +159,59 @@ func UndoIsRecording(recordingFile string) (result bool, err error) {
 	}
 
 	return bytes.Equal(marker, data), nil
+}
+
+// Fetch the output of a udbserver get_info command, split on ; and , characters.
+//
+// This is not (currently) implementing a proper parse of the data returned, just making it more
+// convenient to search.
+func undoGetInfo(conn gdbConn) []string {
+	info, err := conn.undoCmd("get_info")
+	if err != nil {
+		panic("Failed to retrieve Undo stop info.")
+	}
+	splitter := func(c rune) bool {
+		return c == ';' || c == ','
+	}
+	return strings.FieldsFunc(info, splitter)
+}
+
+// Fetch whether the replay session is currently at the end of recorded history.
+func UndoAtEndOfHistory(p *gdbProcess) bool {
+	info_fields := undoGetInfo(p.conn)
+	for _, value := range info_fields {
+		if value == "has_exited" || value == "at_event_log_end" {
+			return true
+		}
+	}
+	return false
+}
+
+// Fetch the process exit code (or zero, if not applicable) from the recording.
+func UndoGetExitCode(p *gdbProcess) int {
+	exit_code := int8(0)
+	info_fields := undoGetInfo(p.conn)
+
+	for idx, value := range info_fields {
+		if value != "has_exited" {
+			continue
+		}
+
+		// Exit status, encoded as hex, follows the has_exited string.
+		exit_status, err := strconv.ParseInt(info_fields[idx+1], 16, 16)
+		if err != nil {
+			panic("Invalid exit code.")
+		}
+
+		// Convert exit status into the form Delve usually reports - positive integer for a
+		// normal exit, negative signal number if terminated by a signal.
+		if exit_status&0x7f != 0 {
+			exit_code = -int8(exit_status & 0x7f)
+		} else {
+			exit_code = int8(exit_status >> 8)
+		}
+		break
+	}
+
+	return int(exit_code)
 }
