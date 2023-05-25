@@ -872,7 +872,17 @@ continueLoop:
 		trapthread, atstart, shouldStop, shouldExitErr = p.handleThreadSignals(cctx, trapthread)
 		if shouldExitErr {
 			p.almostExited = true
-			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}
+
+			exit_code := 0
+			if p.conn.isUndoServer {
+				// Retrieve the exit code of the recorded process (if applicable)
+				// from udbserver.
+				exit_code, err = undoGetExitCode(&p.conn)
+				if err != nil {
+					return nil, proc.StopUnknown, err
+				}
+			}
+			return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid, Status: exit_code}
 		}
 		if shouldStop {
 			break continueLoop
@@ -941,7 +951,7 @@ func (p *gdbProcess) handleThreadSignals(cctx *proc.ContinueOnceContext, trapthr
 			}
 		case breakpointSignal: // breakpoint
 			isStopSignal = true
-		case childSignal: // stop on debugserver but SIGCHLD on lldb-server/linux
+		case childSignal: // stop on debugserver or udbserver but SIGCHLD on lldb-server/linux
 			if p.conn.isDebugserver {
 				isStopSignal = true
 			}

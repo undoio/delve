@@ -7,6 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/undoio/delve/pkg/proc"
 )
@@ -157,4 +160,93 @@ func UndoIsRecording(recordingFile string) (result bool, err error) {
 	}
 
 	return bytes.Equal(marker, data), nil
+}
+
+// Fetch the output of a udbserver get_info command, split on ; and , characters.
+//
+// This is not (currently) implementing a proper parse of the data returned, just making it more
+// convenient to search.
+func undoGetInfo(conn *gdbConn) ([]string, error) {
+	info, err := conn.undoCmd("get_info")
+	if err != nil {
+		return nil, err
+	}
+	splitter := func(c rune) bool {
+		return c == ';' || c == ','
+	}
+	return strings.FieldsFunc(info, splitter), nil
+}
+
+// Fetch whether the replay session is currently at the end of recorded history.
+func undoAtEndOfHistory(conn *gdbConn) (bool, error) {
+	info_fields, err := undoGetInfo(conn)
+	if err != nil {
+		return false, err
+	}
+	for _, value := range info_fields {
+		if value == "has_exited" || value == "at_event_log_end" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Transform a stopPacket if necessary to represent the state of the replay session.
+//
+// Usually the packet will be passed through unaltered. Currently the only transformation
+// implemented is modify a packet at the end of replay history to look like a SIGKILL, to be
+// consistent with how RR would report this condition.
+func undoHandleStopPacket(conn *gdbConn, sp stopPacket) (stopPacket, error) {
+	// TODO: find a different way of indicating end of history as opposed to actual process
+	// exit.
+	//
+	// TODO: find a different way of indicating the start of history (currently registers as a
+	// "hardcoded breakpoint") - should we use the atstart flag that rr uses somehow?.
+
+	at_end, err := undoAtEndOfHistory(conn)
+	if err != nil {
+		return stopPacket{}, err
+	}
+
+	if at_end {
+		// Mirror the behaviour of rr, in which the server will send a fake SIGKILL
+		// at the end of history.
+		sp.sig = _SIGKILL
+	}
+
+	return sp, nil
+}
+
+// Fetch the exit code of the replay process (or zero, if not applicable) from the recording.
+func undoGetExitCode(conn *gdbConn) (int, error) {
+	exit_code := 0
+	info_fields, err := undoGetInfo(conn)
+	if err != nil {
+		return 0, err
+	}
+
+	for idx, value := range info_fields {
+		if value != "has_exited" {
+			continue
+		}
+
+		// Exit status, encoded as hex, follows the has_exited string.
+		exit_status, err := strconv.ParseInt(info_fields[idx+1], 16, 16)
+		if err != nil {
+			return 0, err
+		}
+
+		// Convert exit status into the form Delve usually reports - positive integer for a
+		// normal exit, negative signal number if terminated by a signal.
+		wait_status := syscall.WaitStatus(exit_status)
+		if wait_status.Signaled() {
+			exit_signal := wait_status.Signal()
+			exit_code = -int(exit_signal)
+		} else {
+			exit_code = wait_status.ExitStatus()
+		}
+		break
+	}
+
+	return exit_code, nil
 }

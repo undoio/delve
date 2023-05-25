@@ -13,7 +13,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/undoio/delve/pkg/logflags"
@@ -807,10 +806,14 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 			}
 		}
 
-		if syscall.Signal(sig) == syscall.SIGCHLD {
-			// FIXME get exit code
-			return false, stopPacket{}, proc.ErrProcessExited{Pid: conn.pid, Status: 0}
+		if conn.isUndoServer {
+			// Transform packet, if necessary, for instance at the end of time.
+			sp, err = undoHandleStopPacket(conn, sp)
+			if err != nil {
+				return false, stopPacket{}, err
+			}
 		}
+
 		return false, sp, nil
 
 	case 'W', 'X':
