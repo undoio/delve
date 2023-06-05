@@ -1127,11 +1127,11 @@ func (p *gdbProcess) When() (string, error) {
 	}
 	result := ""
 	if p.conn.isUndoServer {
-		extent, err := p.conn.undoCmd("get_time")
+		when, err := undoWhen(&p.conn)
 		if err != nil {
 			return "", err
 		}
-		result = extent
+		result = when
 	} else {
 		event, err := p.conn.qRRCmd("when")
 		if err != nil {

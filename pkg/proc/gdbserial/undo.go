@@ -250,3 +250,12 @@ func undoGetExitCode(conn *gdbConn) (int, error) {
 
 	return exit_code, nil
 }
+
+// Fetch a representation of the current time as a string.
+func undoWhen(conn *gdbConn) (string, error) {
+	extent, err := conn.undoCmd("get_time")
+	if err != nil {
+		return "", err
+	}
+	return extent, nil
+}
