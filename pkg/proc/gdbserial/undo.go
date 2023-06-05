@@ -176,6 +176,23 @@ func undoGetInfo(conn gdbConn) []string {
 	return strings.FieldsFunc(info, splitter)
 }
 
+func undoGetLogExtent(p *gdbProcess) (uint64, uint64) {
+	extent, err := p.conn.undoCmd("get_log_extent")
+	if err != nil {
+		panic("Failed to retrieve Undo log extent.")
+	}
+	bbcounts := strings.Split(extent, ",")
+	bbcount_min, err := strconv.ParseUint(bbcounts[0], 16, 64)
+	if err != nil {
+		panic("Failed to parse Undo log minimum.")
+	}
+	bbcount_max, err := strconv.ParseUint(bbcounts[1], 16, 64)
+	if err != nil {
+		panic("Failed to parse Undo log maximum.")
+	}
+	return bbcount_min, bbcount_max
+}
+
 // Fetch whether the replay session is currently at the end of recorded history.
 func UndoAtEndOfHistory(p *gdbProcess) bool {
 	info_fields := undoGetInfo(p.conn)
@@ -217,9 +234,30 @@ func UndoGetExitCode(p *gdbProcess) int {
 }
 
 func undoWhen(p *gdbProcess) (string, error) {
-	extent, err := p.conn.undoCmd("get_time")
+	resp, err := p.conn.undoCmd("get_time")
 	if err != nil {
 		return "", err
 	}
-	return extent, nil
+
+	// We have received a comma-separated list of hex numbers.
+	time_parts := strings.Split(resp, ",")
+
+	// First component is bbcount.
+	bbcount, err := strconv.ParseUint(time_parts[0], 16, 64)
+	if err != nil {
+		return "", err
+	}
+
+	// Second component is PC.
+	pc, err := strconv.ParseUint(time_parts[1], 16, 64)
+	if err != nil {
+		return "", err
+	}
+
+	// Calculate our percentage through available history.
+	bbcount_min, bbcount_max := undoGetLogExtent(p)
+	progress := ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
+
+	result := fmt.Sprintf("[replaying %d%% %d:0x%x]", progress, bbcount, pc)
+	return result, nil
 }
