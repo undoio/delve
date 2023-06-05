@@ -215,3 +215,11 @@ func UndoGetExitCode(p *gdbProcess) int {
 
 	return int(exit_code)
 }
+
+func undoWhen(p *gdbProcess) (string, error) {
+	extent, err := p.conn.undoCmd("get_time")
+	if err != nil {
+		return "", err
+	}
+	return extent, nil
+}
