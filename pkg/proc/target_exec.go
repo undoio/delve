@@ -107,6 +107,9 @@ func (grp *TargetGroup) Continue() error {
 			// might very well not work.
 			_ = grp.setCurrentThreads(traptgt, trapthread)
 			if pe, ok := contOnceErr.(ErrProcessExited); ok {
+				// With a replay backend we may still debug after an apparent
+				// process exit so we still need to clean up our stepping state.
+				traptgt.ClearSteppingBreakpoints()
 				traptgt.exitStatus = pe.Status
 			}
 			return contOnceErr
