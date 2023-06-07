@@ -256,7 +256,10 @@ func undoWhen(p *gdbProcess) (string, error) {
 
 	// Calculate our percentage through available history.
 	bbcount_min, bbcount_max := undoGetLogExtent(p)
-	progress := ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
+	progress := uint64(0)
+	if bbcount_min != bbcount_max {
+		progress = ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
+	}
 
 	result := fmt.Sprintf("[replaying %d%% %d:0x%x]", progress, bbcount, pc)
 	return result, nil
