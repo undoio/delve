@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/undoio/delve/pkg/proc"
 )
 
+// Get the UDB server filename for the current architecture.
 func serverFile() (string, error) {
 	switch runtime.GOARCH {
 	case "amd64":
@@ -27,8 +29,31 @@ func serverFile() (string, error) {
 	}
 }
 
+// Get the full path to the UDB server for the current architecture.
+func serverPath() (string, error) {
+	udb_path, err := exec.LookPath("udb")
+	if err != nil {
+		return "", err
+	}
+
+	udb_path_abs, err := filepath.EvalSymlinks(udb_path)
+	if err != nil {
+		return "", err
+	}
+
+	server_file, err := serverFile()
+	if err != nil {
+		return "", err
+	}
+
+	udb_dir_abs := filepath.Dir(udb_path_abs)
+	cmd_path := filepath.Join(udb_dir_abs, server_file)
+
+	return cmd_path, nil
+}
+
 func UndoIsAvailable() error {
-	server, err := serverFile()
+	server, err := serverPath()
 	if err != nil {
 		return err
 	}
@@ -101,7 +126,7 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 
 	args := make([]string, 0)
 	args = append(args, "--load-file", recording, "--connect-port", port[1:])
-	server, err := serverFile()
+	server, err := serverPath()
 	if err != nil {
 		return nil, err
 	}
