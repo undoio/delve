@@ -807,7 +807,33 @@ const (
 	debugServerTargetExcBreakpoint     = 0x96
 )
 
+// The real work is accomplished in continueOnceWorker, this wrapper just handles udbserver's progress
+// indicators.
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
+	if p.conn.isUndoServer {
+		// Clear interrupt (and enable progress indication)
+		_, err := p.conn.undoCmd("clear_interrupt")
+		if err != nil {
+			return nil, proc.StopUnknown, err
+		}
+	}
+
+	trapthread, stopReason, err := p.continueOnceWorker(cctx)
+
+	if p.conn.isUndoServer {
+		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
+		if reset_err != nil {
+			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+		}
+		if err == nil {
+			err = reset_err
+		}
+	}
+
+	return trapthread, stopReason, err
+}
+
+func (p *gdbProcess) continueOnceWorker(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if p.exited {
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}
 	}
@@ -1067,7 +1093,34 @@ func (p *gdbProcess) Detach(kill bool) error {
 }
 
 // Restart will restart the process from the given position.
+// The real work is accomplished in restartWorker, this wrapper just handles udbserver's progress
+// indicators.
 func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
+	if p.conn.isUndoServer {
+		// Clear interrupt (and enable progress indication)
+		_, err := p.conn.undoCmd("clear_interrupt")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	currentThread, err := p.restartWorker(cctx, pos)
+
+	if p.conn.isUndoServer {
+		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
+		if reset_err != nil {
+			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+		}
+		if err == nil {
+			err = reset_err
+		}
+	}
+
+	return currentThread, err
+}
+
+// restartWorker will restart the process from the given position.
+func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
