@@ -29,6 +29,7 @@ func newUndoSession() *undoSession {
 	return &undoSession{
 		checkpointNextId: 1,
 		checkpoints:      make(map[int]proc.Checkpoint),
+		volatile:         false,
 	}
 }
 
@@ -184,6 +185,59 @@ func (uc *undoSession) activateVolatile(conn *gdbConn) (func(), error) {
 		uc.volatile = false
 		_, _ = undoCmd(conn, "set_debuggee_volatile", "0")
 	}, nil
+}
+
+// Callback before Delve begins a continue-type operation.
+// Used to ensure our progress indicators are active and ready to start. Returns an error of nil on
+// success.
+func (uc *undoSession) continuePre(conn *gdbConn) error {
+	if uc.volatile {
+		return nil
+	}
+	// Clear interrupt (and enable progress indication)
+	_, err := undoCmd(conn, "clear_interrupt")
+	return err
+}
+
+// Callback after Delve finishes a continue-type operation.
+// Used to ensure our progress indicators are reset. Returns an error of nil on success.
+func (uc *undoSession) continuePost(conn *gdbConn) error {
+	if uc.volatile {
+		return nil
+	}
+	_, reset_err := undoCmd(conn, "reset_progress_indicator")
+	if reset_err != nil {
+		conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+	}
+	return reset_err
+}
+
+// Callback before Delve starts a restart-type operation.
+// Used to ensure our progress indicators are active and ready to start. Returns an error of nil on
+// success.
+func (uc *undoSession) restartPre(conn *gdbConn) error {
+	if uc.volatile {
+		// We should only be in volatile mode during an inferior call, so this case
+		// should not be possible.
+		panic("attempted to restart in volatile mode.")
+	}
+	// Clear interrupt (and enable progress indication)
+	_, err := undoCmd(conn, "clear_interrupt")
+	return err
+}
+
+// Callback after Delve finishes a restart-type operation.
+// Used to ensure our progress indicators are reset. Returns an error of nil on success.
+func (uc *undoSession) restartPost(conn *gdbConn) error {
+	if uc.volatile {
+		// Restart should not change our volatile mode state.
+		panic("in volatile mode after restart.")
+	}
+	_, reset_err := undoCmd(conn, "reset_progress_indicator")
+	if reset_err != nil {
+		conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+	}
+	return reset_err
 }
 
 // Get the UDB server filename for the current architecture.
