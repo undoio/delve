@@ -801,7 +801,29 @@ const (
 	debugServerTargetExcBreakpoint     = 0x96
 )
 
+// The real work is accomplished in continueOnceWorker, this wrapper just handles udbserver's progress
+// indicators.
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
+	if p.conn.undoSession != nil {
+		err := p.conn.undoSession.continuePre(&p.conn)
+		if err != nil {
+			return nil, proc.StopUnknown, err
+		}
+	}
+
+	trapthread, stopReason, err := p.continueOnceWorker(cctx)
+
+	if p.conn.undoSession != nil {
+		post_err := p.conn.undoSession.continuePost(&p.conn)
+		if err == nil {
+			err = post_err
+		}
+	}
+
+	return trapthread, stopReason, err
+}
+
+func (p *gdbProcess) continueOnceWorker(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if p.exited {
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}
 	}
@@ -1061,7 +1083,30 @@ func (p *gdbProcess) Detach(kill bool) error {
 }
 
 // Restart will restart the process from the given position.
+// The real work is accomplished in restartWorker, this wrapper just handles udbserver's progress
+// indicators.
 func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
+	if p.conn.undoSession != nil {
+		err := p.conn.undoSession.restartPre(&p.conn)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	currentThread, err := p.restartWorker(cctx, pos)
+
+	if p.conn.undoSession != nil {
+		post_err := p.conn.undoSession.restartPost(&p.conn)
+		if err == nil {
+			err = post_err
+		}
+	}
+
+	return currentThread, err
+}
+
+// restartWorker will restart the process from the given position.
+func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
 	if p.tracedir == "" {
 		return nil, proc.ErrNotRecorded
 	}
