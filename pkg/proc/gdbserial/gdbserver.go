@@ -1144,7 +1144,19 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 
 	p.ctrlC = false
 
-	err := p.conn.restart(pos)
+	var err error
+	if p.conn.isUndoServer {
+		switch pos {
+		case "start":
+			err = p.conn.restart("")
+		case "end":
+			_, err = p.conn.undoCmd("goto_record_mode")
+		default:
+			err = p.conn.restart(pos)
+		}
+	} else {
+		err = p.conn.restart(pos)
+	}
 	if err != nil {
 		return nil, err
 	}
