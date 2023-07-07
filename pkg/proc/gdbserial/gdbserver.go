@@ -1250,6 +1250,13 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 	if p.conn.isUndoServer {
 		r := make([]proc.Checkpoint, 0, len(p.localCheckpoints))
 		for _, cp := range p.localCheckpoints {
+			// Convert the internal representation of time (which is based on the serial
+			// protocol level representation) to a human-readable version for display.
+			bbcount, pc, err := undoParseServerTime(cp.When)
+			if err != nil {
+				return nil, err
+			}
+			cp.When = undoTimeString(bbcount, pc)
 			r = append(r, cp)
 		}
 		return r, nil
