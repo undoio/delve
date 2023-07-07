@@ -294,6 +294,31 @@ func undoGetExitCode(conn *gdbConn) (int, error) {
 	return exit_code, nil
 }
 
+// Print a bbcount and PC pair in standard Undo time notiation.
+func undoTimeString(bbcount uint64, pc uint64) string {
+	return fmt.Sprintf("%d:0x%x", bbcount, pc)
+}
+
+// Parse the udbserver serial-level representation of a time into bbcount and PC.
+func undoParseServerTime(resp string) (uint64, uint64, error) {
+	// We have received a comma-separated list of hex numbers.
+	time_parts := strings.Split(resp, ",")
+
+	// First component is bbcount.
+	bbcount, err := strconv.ParseUint(time_parts[0], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Second component is PC.
+	pc, err := strconv.ParseUint(time_parts[1], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return bbcount, pc, nil
+}
+
 // Fetch a representation of the current time as a string.
 func undoWhen(conn *gdbConn) (string, error) {
 	resp, err := conn.undoCmd("get_time")
@@ -301,17 +326,7 @@ func undoWhen(conn *gdbConn) (string, error) {
 		return "", err
 	}
 
-	// We have received a comma-separated list of hex numbers.
-	time_parts := strings.Split(resp, ",")
-
-	// First component is bbcount.
-	bbcount, err := strconv.ParseUint(time_parts[0], 16, 64)
-	if err != nil {
-		return "", err
-	}
-
-	// Second component is PC.
-	pc, err := strconv.ParseUint(time_parts[1], 16, 64)
+	bbcount, pc, err := undoParseServerTime(resp)
 	if err != nil {
 		return "", err
 	}
@@ -322,11 +337,12 @@ func undoWhen(conn *gdbConn) (string, error) {
 		return "", err
 	}
 
-	progress := uint64(100)
+	history_perc := uint64(100)
 	if bbcount_min != bbcount_max {
-		progress = ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
+		history_perc = ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
 	}
 
-	result := fmt.Sprintf("[replaying %d%% %d:0x%x]", progress, bbcount, pc)
+	history_perc_fmt := fmt.Sprintf("%d%%", history_perc)
+	result := fmt.Sprintf("[replaying %s %s]", history_perc_fmt, undoTimeString(bbcount, pc))
 	return result, nil
 }
