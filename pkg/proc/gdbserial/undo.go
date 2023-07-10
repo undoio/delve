@@ -296,7 +296,20 @@ func undoGetExitCode(conn *gdbConn) (int, error) {
 
 // Print a bbcount and PC pair in standard Undo time notiation.
 func undoTimeString(bbcount uint64, pc uint64) string {
-	return fmt.Sprintf("%d:0x%x", bbcount, pc)
+	var bbcount_groups []string
+
+	// Chop 3 digits at a time from the low-order end of the bbcount string.
+	var bbcount_rem uint64
+	for bbcount_rem = bbcount; bbcount_rem > 1000; bbcount_rem = bbcount_rem / 1000 {
+		// Format the group with leading zeros.
+		group := fmt.Sprintf("%03d", bbcount_rem%1000)
+		bbcount_groups = append([]string{group}, bbcount_groups...)
+	}
+	// Finally, add the highest-order group, which has no leading zeros.
+	bbcount_groups = append([]string{fmt.Sprintf("%d", bbcount_rem)}, bbcount_groups...)
+
+	// Return the comma-separated whole.
+	return fmt.Sprintf("%s:0x%x", strings.Join(bbcount_groups, ","), pc)
 }
 
 // Parse the udbserver serial-level representation of a time into bbcount and PC.
