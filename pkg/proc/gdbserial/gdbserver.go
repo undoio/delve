@@ -1126,13 +1126,47 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 	}
 
 	// Is this a checkpoint on a server using local checkpoints?
-	if len(pos) > 1 && pos[:1] == "c" && p.conn.isUndoServer {
-		cpid, _ := strconv.Atoi(pos[1:])
-		checkpoint, exists := p.localCheckpoints[cpid]
-		if !exists {
-			return nil, errors.New("Checkpoint not found")
+	if p.conn.isUndoServer {
+		// Validate and transform input.
+		//
+		// We will accept:
+		//   start | end - magic values for getting to the extremes of history.
+		//   cN          - a checkpoint name (a "c" character followed by an integer ID)
+		//   BBCOUNT     - an Undo bbcount as a decimal integer (with or without comma-
+		//                 separated grouping of digits).
+		//   BBCOUNT:PC  - an Undo bbcount, as above, followed by a colon and then a
+		//                 program counter value in hex (with leading 0x).
+		if pos == "start" || pos == "end" {
+			// Special case values - valid with no extra checking.
+		} else if len(pos) > 1 && pos[:1] == "c" {
+			// Validate a checkpoint ID.
+			cpid, _ := strconv.Atoi(pos[1:])
+			checkpoint, exists := p.localCheckpoints[cpid]
+			if !exists {
+				return nil, errors.New("Checkpoint not found")
+			}
+			pos = checkpoint.When
+		} else {
+			// Validate a potential bbcount or precise time.
+			pos = strings.ReplaceAll(pos, ",", "")
+			var bbcount, pc uint64
+			var err error
+			if strings.Contains(pos, ":") {
+				_, err = fmt.Sscanf(pos, "%d:0x%x\n", &bbcount, &pc)
+			} else if _, err = fmt.Sscanf(pos, "%d\n", &bbcount); err == nil {
+				// It's a valid bbcount.
+				pc = 0
+			}
+
+			if err != nil {
+				return nil, errors.New("Could not parse time or checkpoint argument to restart.")
+			}
+
+			// A representation of the current time, as used by the udbserver serial
+			// protocol. This matches the format returned by vUDB;get_time and can be
+			// used as an argument to vUDB;goto_time.
+			pos = fmt.Sprintf("%x;%x", bbcount, pc)
 		}
-		pos = checkpoint.When
 	}
 
 	p.exited = false
