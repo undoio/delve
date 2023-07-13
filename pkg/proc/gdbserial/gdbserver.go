@@ -167,8 +167,8 @@ type gdbProcess struct {
 
 	onDetach func() // called after a successful detach
 
-	localCheckpointLastId int
-	localCheckpoints      map[int]proc.Checkpoint
+	// State relating to the Undo session - present when conn.isUndoServer is set.
+	undoSession *undoSession
 }
 
 var _ proc.RecordingManipulationInternal = &gdbProcess{}
@@ -242,9 +242,6 @@ func newProcess(process *os.Process) *gdbProcess {
 		gcmdok:         true,
 		threadStopInfo: true,
 		process:        process,
-
-		localCheckpointLastId: 1,
-		localCheckpoints:      make(map[int]proc.Checkpoint),
 	}
 
 	switch p.bi.Arch.Name {
@@ -1127,45 +1124,10 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 
 	// Is this a checkpoint on a server using local checkpoints?
 	if p.conn.isUndoServer {
-		// Validate and transform input.
-		//
-		// We will accept:
-		//   start | end - magic values for getting to the extremes of history.
-		//   cN          - a checkpoint name (a "c" character followed by an integer ID)
-		//   BBCOUNT     - an Undo bbcount as a decimal integer (with or without comma-
-		//                 separated grouping of digits).
-		//   BBCOUNT:PC  - an Undo bbcount, as above, followed by a colon and then a
-		//                 program counter value in hex (with leading 0x).
-		if pos == "start" || pos == "end" {
-			// Special case values - valid with no extra checking.
-		} else if len(pos) > 1 && pos[:1] == "c" {
-			// Validate a checkpoint ID.
-			cpid, _ := strconv.Atoi(pos[1:])
-			checkpoint, exists := p.localCheckpoints[cpid]
-			if !exists {
-				return nil, errors.New("Checkpoint not found")
-			}
-			pos = checkpoint.When
-		} else {
-			// Validate a potential bbcount or precise time.
-			pos = strings.ReplaceAll(pos, ",", "")
-			var bbcount, pc uint64
-			var err error
-			if strings.Contains(pos, ":") {
-				_, err = fmt.Sscanf(pos, "%d:0x%x\n", &bbcount, &pc)
-			} else if _, err = fmt.Sscanf(pos, "%d\n", &bbcount); err == nil {
-				// It's a valid bbcount.
-				pc = 0
-			}
-
-			if err != nil {
-				return nil, errors.New("Could not parse time or checkpoint argument to restart.")
-			}
-
-			// A representation of the current time, as used by the udbserver serial
-			// protocol. This matches the format returned by vUDB;get_time and can be
-			// used as an argument to vUDB;goto_time.
-			pos = fmt.Sprintf("%x;%x", bbcount, pc)
+		var err error
+		pos, err = p.undoSession.resolveUserTime(p, pos)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -1180,14 +1142,7 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 
 	var err error
 	if p.conn.isUndoServer {
-		switch pos {
-		case "start":
-			err = p.conn.restart("")
-		case "end":
-			_, err = p.conn.undoCmd("goto_record_mode")
-		default:
-			err = p.conn.restart(pos)
-		}
+		err = p.undoSession.travelToTime(p, pos)
 	} else {
 		err = p.conn.restart(pos)
 	}
@@ -1253,14 +1208,7 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		cpid := p.localCheckpointLastId
-		p.localCheckpointLastId++
-		when, err := p.conn.undoCmd("get_time")
-		if err != nil {
-			return -1, err
-		}
-		p.localCheckpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
-		return cpid, nil
+		return p.undoSession.createCheckpoint(p, where)
 	}
 
 	resp, err := p.conn.qRRCmd("checkpoint", where)
@@ -1294,18 +1242,7 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		r := make([]proc.Checkpoint, 0, len(p.localCheckpoints))
-		for _, cp := range p.localCheckpoints {
-			// Convert the internal representation of time (which is based on the serial
-			// protocol level representation) to a human-readable version for display.
-			bbcount, pc, err := undoParseServerTime(cp.When)
-			if err != nil {
-				return nil, err
-			}
-			cp.When = undoTimeString(bbcount, pc)
-			r = append(r, cp)
-		}
-		return r, nil
+		return p.undoSession.getCheckpoints()
 	}
 
 	resp, err := p.conn.qRRCmd("info checkpoints")
@@ -1341,7 +1278,7 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		delete(p.localCheckpoints, id)
+		p.undoSession.deleteCheckpoint(id)
 		// We don't care if it didn't exist
 		return nil
 	}

@@ -2,6 +2,7 @@ package gdbserial
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -14,6 +15,136 @@ import (
 
 	"github.com/undoio/delve/pkg/proc"
 )
+
+// State relating to an Undo "session" - used to correctly interpret and handle time-travel
+// operations on a gdbProcess when running with the Undo backend.
+//
+// See also: isUndoServer on the gdbConn structure - when that is set, the undoSession member on the
+// gdbProcess structure should point to an instance of this structure.
+type undoSession struct {
+	checkpointLastId int                     // For allocating checkpoint IDs
+	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
+}
+
+// Create a new undoSession structure.
+func newUndoSession() *undoSession {
+	return &undoSession{
+		checkpointLastId: 1,
+		checkpoints:      make(map[int]proc.Checkpoint),
+	}
+}
+
+// Create a Delve checkpoint structure at the current time, with the supplied note.
+func (uc *undoSession) createCheckpoint(p *gdbProcess, where string) (int, error) {
+	cpid := uc.checkpointLastId
+	uc.checkpointLastId++
+	when, err := p.conn.undoCmd("get_time")
+	if err != nil {
+		return -1, err
+	}
+	uc.checkpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+	return cpid, nil
+}
+
+// Look up a Delve checkpoint structure by name.
+func (uc *undoSession) lookupCheckpoint(pos string) (proc.Checkpoint, error) {
+	if len(pos) == 0 {
+		panic("empty checkpoint name")
+	}
+	if pos[0] != 'c' {
+		panic("invalid checkpoint name")
+	}
+	cpid, _ := strconv.Atoi(pos[1:])
+	checkpoint, exists := uc.checkpoints[cpid]
+	if !exists {
+		return proc.Checkpoint{}, errors.New("checkpoint not found")
+	}
+	return checkpoint, nil
+}
+
+// Delete a Delve checkpoint structure from our tracking.
+func (uc *undoSession) deleteCheckpoint(id int) {
+	delete(uc.checkpoints, id)
+}
+
+// Fetch all Delve checkpoint structures and return an array for user display (with the When field
+// rewritten in human readable form).
+func (uc *undoSession) getCheckpoints() ([]proc.Checkpoint, error) {
+	r := make([]proc.Checkpoint, 0, len(uc.checkpoints))
+	for _, cp := range uc.checkpoints {
+		// Convert the internal representation of time (which is based on the serial
+		// protocol level representation) to a human-readable version for display.
+		bbcount, pc, err := undoParseServerTime(cp.When)
+		if err != nil {
+			return nil, err
+		}
+		cp.When = undoTimeString(bbcount, pc)
+		r = append(r, cp)
+	}
+	return r, nil
+}
+
+// Transform a user-specified time into a canonical form. The returned string has been validated
+// (unknown checkpoint IDs, misspelt magic values and incorrectly formatted times will be rejected)
+// and is suitable for passing to travelToTime.
+func (uc *undoSession) resolveUserTime(p *gdbProcess, pos string) (string, error) {
+	// Validate and transform input.
+	//
+	// We will accept:
+	//   start | end - magic values for getting to the extremes of history.
+	//   cN          - a checkpoint name (a "c" character followed by an integer ID)
+	//   BBCOUNT     - an Undo bbcount as a decimal integer (with or without comma-separated
+	//                 grouping of digits).
+	//   BBCOUNT:PC  - an Undo bbcount, as above, followed by a colon and then a program
+	//                 counter value in hex (with leading 0x).
+	if pos == "start" || pos == "end" {
+		// Special case values - valid with no extra checking.
+	} else if len(pos) > 1 && pos[:1] == "c" {
+		// Validate a checkpoint ID.
+		checkpoint, err := uc.lookupCheckpoint(pos)
+		if err != nil {
+			return "", err
+		}
+		pos = checkpoint.When
+	} else {
+		// Validate a potential bbcount or precise time.
+		pos = strings.ReplaceAll(pos, ",", "")
+		var bbcount, pc uint64
+		var err error
+		if strings.Contains(pos, ":") {
+			_, err = fmt.Sscanf(pos, "%d:0x%x\n", &bbcount, &pc)
+		} else if _, err = fmt.Sscanf(pos, "%d\n", &bbcount); err == nil {
+			// It's a valid bbcount.
+			pc = 0
+		}
+
+		if err != nil {
+			return "", errors.New("could not parse time or checkpoint argument to restart.")
+		}
+
+		// A representation of the current time, as used by the udbserver serial protocol.
+		// This matches the format returned by vUDB;get_time and can be used as an argument
+		// to vUDB;goto_time.
+		pos = fmt.Sprintf("%x;%x", bbcount, pc)
+	}
+
+	return pos, nil
+}
+
+// Move the replay process to the a point in time. The "pos" argument should be obtained by calling
+// resolveUserTime to ensure that it is valid.
+func (uc *undoSession) travelToTime(p *gdbProcess, pos string) error {
+	var err error
+	switch pos {
+	case "start":
+		err = p.conn.restart("")
+	case "end":
+		_, err = p.conn.undoCmd("goto_record_mode")
+	default:
+		err = p.conn.restart(pos)
+	}
+	return err
+}
 
 // Get the UDB server filename for the current architecture.
 func serverFile() (string, error) {
@@ -156,6 +287,10 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 	// to the GDB mapping, not the Linux mapping (the binutils-gdb repo
 	// defines the GDB mapping in include/gdb/signals.def)
 	p.conn.isUndoServer = true
+
+	// Create storage for Undo checkpoints, which (unlike rr) aren't stored in the server.
+	p.undoSession = newUndoSession()
+
 	return tgt, nil
 }
 
