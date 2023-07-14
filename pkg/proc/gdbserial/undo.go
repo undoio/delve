@@ -2,14 +2,17 @@ package gdbserial
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,10 +23,14 @@ import (
 
 // State relating to an Undo "session" - used to correctly interpret and handle time-travel
 // operations on a gdbConn when running with the Undo backend.
+//
+// The current checkpoints are persisted to disk in an "Undo session file" via the save() method.
+// They are restored via the load() method.
 type undoSession struct {
 	checkpointNextId int                     // For allocating checkpoint IDs
 	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
 	volatile         bool                    // Is the Undo connection currently in volatile mode?
+	sessionState     *session                // The most recently loaded / saved session state file contents.
 }
 
 // Create a new undoSession structure.
@@ -32,6 +39,7 @@ func newUndoSession() *undoSession {
 		checkpointNextId: 1,
 		checkpoints:      make(map[int]proc.Checkpoint),
 		volatile:         false,
+		sessionState:     nil,
 	}
 }
 
@@ -52,8 +60,44 @@ func undoCmd(conn *gdbConn, args ...string) (string, error) {
 	return string(resp), nil
 }
 
+// Validate a checkpoint note to ensure easy interopability with UDB bookmarks.
+// Returns nil (no error) if a checkpoint is validated successfully.
+func validateCheckpointNote(where string) error {
+	if where == "" {
+		panic("checkpoint note expectedly empty.")
+	}
+
+	// Perform matching checking to UDB's bookmark creation code, to ensure Delve notes
+	// translate properly into UDB bookmarks when we save the session.
+	//
+	// (compare Bookmarks._verify_name() in the UDB Python code)
+	firstChar := where[0:1]
+	if firstChar == " " {
+		return errors.New("checkpoint note must not start with a space.")
+	} else if _, err := strconv.Atoi(firstChar); err == nil {
+		return errors.New("checkpoint note must not start with a digit.")
+	} else if firstChar == "," || firstChar == "-" || firstChar == "$" {
+		return fmt.Errorf("checkpoint note must not start with character: %c", where[0])
+	} else {
+		firstWord := strings.Split(where, " ")[0]
+		reserved := []string{"annotation", "bookmark", "end", "event", "inferior", "pc",
+			"redo", "start", "time", "undo", "wallclock"}
+		for _, reservedWord := range reserved {
+			if firstWord == reservedWord {
+				return fmt.Errorf("checkpoint note must not start with reserved word: %s", reservedWord)
+			}
+		}
+	}
+
+	return nil
+}
+
 // Create a Delve checkpoint structure at the current time, with the supplied note.
 func (uc *undoSession) createCheckpoint(conn *gdbConn, where string) (int, error) {
+	err := validateCheckpointNote(where)
+	if err != nil {
+		return -1, err
+	}
 	cpid := uc.checkpointNextId
 	uc.checkpointNextId++
 	when, err := undoCmd(conn, "get_time")
@@ -61,6 +105,7 @@ func (uc *undoSession) createCheckpoint(conn *gdbConn, where string) (int, error
 		return -1, err
 	}
 	uc.checkpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+	uc.save(conn)
 	return cpid, nil
 }
 
@@ -83,6 +128,7 @@ func (uc *undoSession) lookupCheckpoint(pos string) (proc.Checkpoint, error) {
 // Delete a Delve checkpoint structure from our tracking.
 func (uc *undoSession) deleteCheckpoint(conn *gdbConn, id int) {
 	delete(uc.checkpoints, id)
+	uc.save(conn)
 }
 
 // Fetch all Delve checkpoint structures and return an array for user display (with the When field
@@ -100,6 +146,190 @@ func (uc *undoSession) getCheckpoints() ([]proc.Checkpoint, error) {
 		r = append(r, cp)
 	}
 	return r, nil
+}
+
+// Represents a single serialised bookmark in our session file format.
+type bookmarkTime struct {
+	Bbcount uint64 `json:"bbcount"`
+	Pc      uint64 `json:"pc"`
+}
+
+// Represents the overall structure of our session file format.
+//
+// Delve can only generate complete state for a v0 session file (which just contains the bookmarks
+// data). When saving state for a recording that does not already have a session file it will use
+// version 1.
+//
+// When saving state for a recording that already had a session file it will use that same format
+// again at save time. That means it will pass through, unmodified, any of the UDB-only fields.
+//
+// To make this happen, all fields from the v1 telemetry format are tagged "omitempty".
+type session struct {
+	Version               int                     `json:"version,omitempty"`
+	Bookmarks             map[string]bookmarkTime `json:"bookmarks"`
+	UndoStack             interface{}             `json:"undo_stack,omitempty"`
+	UndoStackIndex        interface{}             `json:"undo_stack_index,omitempty"`
+	Breakpoints           interface{}             `json:"breakpoints,omitempty"`
+	BreakpointsMax        interface{}             `json:"breakpoints_max,omitempty"`
+	TimeLimits            interface{}             `json:"time_limits,omitempty"`
+	WallClockTimeZone     interface{}             `json:"wallclock_timezone,omitempty"`
+	ReplayStandardStreams interface{}             `json:"replay_standard_streams,omitempty"`
+	SelectedTid           interface{}             `json:"selected_tid,omitempty"`
+	SignalStance          interface{}             `json:"signal_stance,omitempty"`
+	SubstitutePaths       interface{}             `json:"substitute_paths,omitempty"`
+	ConvenienceVariables  interface{}             `json:"convenience_variables,omitempty"`
+	TelemetryId           interface{}             `json:"telemetry_id,omitempty"`
+}
+
+// Get the path to the UDB session file for the current recording.
+func getSessionPath(conn *gdbConn) (string, error) {
+	user, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	recording_ids, err := undoCmd(conn, "get_recording_ids")
+	if err != nil {
+		return "", err
+	}
+	uuids := strings.Split(recording_ids, ";")
+	if len(uuids) != 3 || uuids[1] == "" {
+		panic("unexpected response from get_recording_ids")
+	}
+
+	// This directory is used to determine where the sessions are stored, unless XDG_DATA_HOME
+	// is set.
+	home_dir, present := os.LookupEnv("HOME")
+	if !present {
+		home_dir = user.HomeDir
+	}
+
+	// This directory stores sessions.
+	xdg_data_dir, present := os.LookupEnv("XDG_DATA_HOME")
+	if !present {
+		xdg_data_dir = filepath.Join(home_dir, ".local", "share")
+	}
+	undo_sessions_dir := filepath.Join(xdg_data_dir, "undo", "sessions")
+
+	err = os.MkdirAll(undo_sessions_dir, 0755)
+	if err != nil {
+		return "", err
+	}
+
+	file := filepath.Join(undo_sessions_dir, string(uuids[1])+".json")
+
+	return file, nil
+}
+
+// Load the UDB session file (if it exists) for the current recording.
+func (uc *undoSession) load(conn *gdbConn) error {
+	path, err := getSessionPath(conn)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+
+	// Clear out the session data.
+	*uc = *newUndoSession()
+
+	uc.sessionState = &session{}
+	err = decoder.Decode(uc.sessionState)
+	if err != nil {
+		return err
+	}
+
+	if uc.sessionState.Version != 0 && uc.sessionState.Version != 1 {
+		return fmt.Errorf("Unknown session version %d in file %s", uc.sessionState.Version, path)
+	}
+
+	// Translate the loaded Undo bookmarks into Delve checkpoints.
+	for name, position := range uc.sessionState.Bookmarks {
+		cpid := uc.checkpointNextId
+		uc.checkpointNextId++
+		uc.checkpoints[cpid] = proc.Checkpoint{
+			ID:    cpid,
+			When:  fmt.Sprintf("%x,%x", position.Bbcount, position.Pc),
+			Where: name,
+		}
+	}
+
+	return err
+}
+
+// Save the session file for the current recording.
+func (uc *undoSession) save(conn *gdbConn) error {
+	// Translate Delve checkpoints into Undo bookmarks.
+	if uc.sessionState == nil {
+		// If we don't already have a session state cached from a previous load then we'll
+		// use a version 0 representation as Delve doesn't generate appropriate state for
+		// the other fields in the version 1 format.
+		//
+		// All new-to-v1 fields are tagged "omitempty" and will not be written out.
+		uc.sessionState = &session{
+			Version: 0,
+		}
+	}
+	uc.sessionState.Bookmarks = make(map[string]bookmarkTime)
+
+	// Local copy of the checkpoints.
+	var checkpoints []proc.Checkpoint
+	for _, cp := range uc.checkpoints {
+		checkpoints = append(checkpoints, cp)
+	}
+	// Sort the checkpoints by descending note length - this is to avoid adding a suffix to a
+	// entries that we've already added a suffix to. e.g. if we've previously saved this session
+	// with a duplicated checkpoint note called "test" then we'll have extended one to
+	// "test-0". If the user adds "test" again, we want to rename that to "test-1" rather than
+	// creating a "test-0-0".
+	sort.Slice(checkpoints, func(i, j int) bool {
+		// This is a "Less" function that sorts in descending order of string length.
+		return len(checkpoints[i].Where) > len(checkpoints[j].Where)
+	})
+
+	// Iterate through sorted checkpoints to eliminate duplicates.
+	for _, cp := range checkpoints {
+		// Ensure that notes are made unique before saving - UDB expects bookmark names to
+		// be unique.
+		base_name := cp.Where
+		name := base_name
+		for i := 0; uc.sessionState.Bookmarks[name] != (bookmarkTime{}); i++ {
+			name = fmt.Sprintf("%s-%d", base_name, i)
+		}
+
+		var time bookmarkTime
+		_, err := fmt.Sscanf(cp.When, "%x,%x", &time.Bbcount, &time.Pc)
+		if err != nil {
+			return err
+		}
+		uc.sessionState.Bookmarks[name] = time
+	}
+
+	path, err := getSessionPath(conn)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "    ")
+	err = encoder.Encode(uc.sessionState)
+	if err != nil {
+		return err
+	}
+
+	return err
 }
 
 // Transform a user-specified time into a canonical form. The returned string has been validated
@@ -416,6 +646,9 @@ func UndoReplay(recording string, exePath string, quiet bool, debugInfoDirs []st
 		servercmd.Process.Kill()
 		return nil, err
 	}
+
+	// Load the session details if possible (discarding errors, which are non-fatal).
+	_ = p.conn.undoSession.load(&p.conn)
 
 	return tgt, nil
 }
