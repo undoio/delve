@@ -1278,7 +1278,7 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		p.undoSession.deleteCheckpoint(id)
+		p.undoSession.deleteCheckpoint(p, id)
 		// We don't care if it didn't exist
 		return nil
 	}
