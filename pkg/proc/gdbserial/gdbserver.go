@@ -807,7 +807,7 @@ const (
 // The real work is accomplished in continueOnceWorker, this wrapper just handles udbserver's progress
 // indicators.
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
-	if p.conn.isUndoServer {
+	if p.conn.isUndoServer && !p.undoSession.volatile {
 		// Clear interrupt (and enable progress indication)
 		_, err := p.conn.undoCmd("clear_interrupt")
 		if err != nil {
@@ -817,7 +817,7 @@ func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, 
 
 	trapthread, stopReason, err := p.continueOnceWorker(cctx)
 
-	if p.conn.isUndoServer {
+	if p.conn.isUndoServer && !p.undoSession.volatile {
 		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
 		if reset_err != nil {
 			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
@@ -1094,6 +1094,11 @@ func (p *gdbProcess) Detach(kill bool) error {
 // indicators.
 func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
 	if p.conn.isUndoServer {
+		if p.undoSession.volatile {
+			// We should only be in volatile mode during an inferior call, so this case
+			// should not be possible.
+			panic("attempted to restart in volatile mode.")
+		}
 		// Clear interrupt (and enable progress indication)
 		_, err := p.conn.undoCmd("clear_interrupt")
 		if err != nil {
@@ -1104,6 +1109,10 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 	currentThread, err := p.restartWorker(cctx, pos)
 
 	if p.conn.isUndoServer {
+		if p.undoSession.volatile {
+			// Restart should not change our volatile mode state.
+			panic("in volatile mode after restart.")
+		}
 		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
 		if reset_err != nil {
 			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
@@ -1327,13 +1336,7 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 	}
 
 	if p.conn.isUndoServer {
-		_, err := p.conn.undoCmd("set_debuggee_volatile", "1")
-		if err != nil {
-			return nil, err
-		}
-		return func() {
-			_, _ = p.conn.undoCmd("set_debuggee_volatile", "0")
-		}, nil
+		return p.undoSession.activateVolatile(p)
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target

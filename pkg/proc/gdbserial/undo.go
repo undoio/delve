@@ -30,6 +30,7 @@ import (
 type undoSession struct {
 	checkpointNextId int                     // For allocating checkpoint IDs
 	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
+	volatile         bool                    // Is the Undo connection currently in volatile mode?
 }
 
 // Create a new undoSession structure.
@@ -37,6 +38,7 @@ func newUndoSession() *undoSession {
 	return &undoSession{
 		checkpointNextId: 1,
 		checkpoints:      make(map[int]proc.Checkpoint),
+		volatile:         false,
 	}
 }
 
@@ -330,6 +332,25 @@ func (uc *undoSession) travelToTime(p *gdbProcess, pos string) error {
 		err = p.conn.restart(pos)
 	}
 	return err
+}
+
+// Activate volatile mode.
+// On success, returns a callback that can be used to deactivate volatile mode (and a nil error).
+// The deactivate callback should be used before volatile is next activated, since volatile mode
+// does not support nesting.
+func (uc *undoSession) activateVolatile(p *gdbProcess) (func(), error) {
+	if uc.volatile {
+		panic("tried to activate volatile mode when already active.")
+	}
+	_, err := p.conn.undoCmd("set_debuggee_volatile", "1")
+	if err != nil {
+		return nil, err
+	}
+	uc.volatile = true
+	return func() {
+		uc.volatile = false
+		_, _ = p.conn.undoCmd("set_debuggee_volatile", "0")
+	}, nil
 }
 
 // Get the UDB server filename for the current architecture.
