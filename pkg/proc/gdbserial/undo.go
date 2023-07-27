@@ -28,14 +28,14 @@ import (
 // See also: isUndoServer on the gdbConn structure - when that is set, the undoSession member on the
 // gdbProcess structure should point to an instance of this structure.
 type undoSession struct {
-	checkpointLastId int                     // For allocating checkpoint IDs
+	checkpointNextId int                     // For allocating checkpoint IDs
 	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
 }
 
 // Create a new undoSession structure.
 func newUndoSession() *undoSession {
 	return &undoSession{
-		checkpointLastId: 1,
+		checkpointNextId: 1,
 		checkpoints:      make(map[int]proc.Checkpoint),
 	}
 }
@@ -78,8 +78,8 @@ func (uc *undoSession) createCheckpoint(p *gdbProcess, where string) (int, error
 	if err != nil {
 		return -1, err
 	}
-	cpid := uc.checkpointLastId
-	uc.checkpointLastId++
+	cpid := uc.checkpointNextId
+	uc.checkpointNextId++
 	when, err := p.conn.undoCmd("get_time")
 	if err != nil {
 		return -1, err
@@ -198,8 +198,8 @@ func (uc *undoSession) load(p *gdbProcess) error {
 
 	// Translate the loaded Undo bookmarks into Delve checkpoints.
 	for name, position := range s.Bookmarks {
-		cpid := uc.checkpointLastId
-		uc.checkpointLastId++
+		cpid := uc.checkpointNextId
+		uc.checkpointNextId++
 		uc.checkpoints[cpid] = proc.Checkpoint{
 			ID:    cpid,
 			When:  fmt.Sprintf("%x,%x", position.Bbcount, position.Pc),
