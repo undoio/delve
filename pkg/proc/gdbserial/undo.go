@@ -292,7 +292,7 @@ func (uc *undoSession) resolveUserTime(p *gdbProcess, pos string) (string, error
 			return "", err
 		}
 		pos = checkpoint.When
-	} else {
+	} else if pos != "" {
 		// Validate a potential bbcount or precise time.
 		pos = strings.ReplaceAll(pos, ",", "")
 		var bbcount, pc uint64
