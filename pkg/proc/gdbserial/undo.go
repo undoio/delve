@@ -20,7 +20,7 @@ import (
 )
 
 // State relating to an Undo "session" - used to correctly interpret and handle time-travel
-// operations on a gdbProcess when running with the Undo backend.
+// operations on a gdbConn when running with the Undo backend.
 //
 // The current checkpoints are persisted to disk in an "Undo session file" via the save() method.
 // They are restored via the load() method.
@@ -75,19 +75,19 @@ func validateCheckpointNote(where string) error {
 }
 
 // Create a Delve checkpoint structure at the current time, with the supplied note.
-func (uc *undoSession) createCheckpoint(p *gdbProcess, where string) (int, error) {
+func (uc *undoSession) createCheckpoint(conn *gdbConn, where string) (int, error) {
 	err := validateCheckpointNote(where)
 	if err != nil {
 		return -1, err
 	}
 	cpid := uc.checkpointNextId
 	uc.checkpointNextId++
-	when, err := p.conn.undoCmd("get_time")
+	when, err := conn.undoCmd("get_time")
 	if err != nil {
 		return -1, err
 	}
 	uc.checkpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
-	uc.save(p)
+	uc.save(conn)
 	return cpid, nil
 }
 
@@ -108,9 +108,9 @@ func (uc *undoSession) lookupCheckpoint(pos string) (proc.Checkpoint, error) {
 }
 
 // Delete a Delve checkpoint structure from our tracking.
-func (uc *undoSession) deleteCheckpoint(p *gdbProcess, id int) {
+func (uc *undoSession) deleteCheckpoint(conn *gdbConn, id int) {
 	delete(uc.checkpoints, id)
-	uc.save(p)
+	uc.save(conn)
 }
 
 // Fetch all Delve checkpoint structures and return an array for user display (with the When field
@@ -142,12 +142,12 @@ type session struct {
 }
 
 // Get the path to the UDB session file for the current recording.
-func getSessionPath(p *gdbProcess) (string, error) {
+func getSessionPath(conn *gdbConn) (string, error) {
 	user, err := user.Current()
 	if err != nil {
 		return "", err
 	}
-	recording_ids, err := p.conn.undoCmd("get_recording_ids")
+	recording_ids, err := conn.undoCmd("get_recording_ids")
 	if err != nil {
 		return "", err
 	}
@@ -174,8 +174,8 @@ func getSessionPath(p *gdbProcess) (string, error) {
 }
 
 // Load the UDB session file (if it exists) for the current recording.
-func (uc *undoSession) load(p *gdbProcess) error {
-	path, err := getSessionPath(p)
+func (uc *undoSession) load(conn *gdbConn) error {
+	path, err := getSessionPath(conn)
 	if err != nil {
 		return err
 	}
@@ -213,7 +213,7 @@ func (uc *undoSession) load(p *gdbProcess) error {
 }
 
 // Save the session file for the current recording.
-func (uc *undoSession) save(p *gdbProcess) error {
+func (uc *undoSession) save(conn *gdbConn) error {
 	// Translate Delve checkpoints into Undo bookmarks.
 	var s session
 	s.Bookmarks = make(map[string]bookmarkTime)
@@ -251,7 +251,7 @@ func (uc *undoSession) save(p *gdbProcess) error {
 		s.Bookmarks[name] = time
 	}
 
-	path, err := getSessionPath(p)
+	path, err := getSessionPath(conn)
 	if err != nil {
 		return err
 	}
@@ -275,7 +275,7 @@ func (uc *undoSession) save(p *gdbProcess) error {
 // Transform a user-specified time into a canonical form. The returned string has been validated
 // (unknown checkpoint IDs, misspelt magic values and incorrectly formatted times will be rejected)
 // and is suitable for passing to travelToTime.
-func (uc *undoSession) resolveUserTime(p *gdbProcess, pos string) (string, error) {
+func (uc *undoSession) resolveUserTime(pos string) (string, error) {
 	// Validate and transform input.
 	//
 	// We will accept:
@@ -321,15 +321,15 @@ func (uc *undoSession) resolveUserTime(p *gdbProcess, pos string) (string, error
 
 // Move the replay process to the a point in time. The "pos" argument should be obtained by calling
 // resolveUserTime to ensure that it is valid.
-func (uc *undoSession) travelToTime(p *gdbProcess, pos string) error {
+func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
 	var err error
 	switch pos {
 	case "start":
-		err = p.conn.restart("")
+		err = conn.restart("")
 	case "end":
-		_, err = p.conn.undoCmd("goto_record_mode")
+		_, err = conn.undoCmd("goto_record_mode")
 	default:
-		err = p.conn.restart(pos)
+		err = conn.restart(pos)
 	}
 	return err
 }
@@ -338,18 +338,18 @@ func (uc *undoSession) travelToTime(p *gdbProcess, pos string) error {
 // On success, returns a callback that can be used to deactivate volatile mode (and a nil error).
 // The deactivate callback should be used before volatile is next activated, since volatile mode
 // does not support nesting.
-func (uc *undoSession) activateVolatile(p *gdbProcess) (func(), error) {
+func (uc *undoSession) activateVolatile(conn *gdbConn) (func(), error) {
 	if uc.volatile {
 		panic("tried to activate volatile mode when already active.")
 	}
-	_, err := p.conn.undoCmd("set_debuggee_volatile", "1")
+	_, err := conn.undoCmd("set_debuggee_volatile", "1")
 	if err != nil {
 		return nil, err
 	}
 	uc.volatile = true
 	return func() {
 		uc.volatile = false
-		_, _ = p.conn.undoCmd("set_debuggee_volatile", "0")
+		_, _ = conn.undoCmd("set_debuggee_volatile", "0")
 	}, nil
 }
 
@@ -499,7 +499,7 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 	p.undoSession = newUndoSession()
 
 	// Load the session details if possible (discarding errors, which are non-fatal).
-	_ = p.undoSession.load(p)
+	_ = p.undoSession.load(&p.conn)
 
 	return tgt, nil
 }

@@ -1134,7 +1134,7 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 	// Is this a checkpoint on a server using local checkpoints?
 	if p.conn.isUndoServer {
 		var err error
-		pos, err = p.undoSession.resolveUserTime(p, pos)
+		pos, err = p.undoSession.resolveUserTime(pos)
 		if err != nil {
 			return nil, err
 		}
@@ -1151,7 +1151,7 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 
 	var err error
 	if p.conn.isUndoServer {
-		err = p.undoSession.travelToTime(p, pos)
+		err = p.undoSession.travelToTime(&p.conn, pos)
 	} else {
 		err = p.conn.restart(pos)
 	}
@@ -1217,7 +1217,7 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		return p.undoSession.createCheckpoint(p, where)
+		return p.undoSession.createCheckpoint(&p.conn, where)
 	}
 
 	resp, err := p.conn.qRRCmd("checkpoint", where)
@@ -1287,7 +1287,7 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 
 	// Handle locally managed checkpoints first
 	if p.conn.isUndoServer {
-		p.undoSession.deleteCheckpoint(p, id)
+		p.undoSession.deleteCheckpoint(&p.conn, id)
 		// We don't care if it didn't exist
 		return nil
 	}
@@ -1336,7 +1336,7 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 	}
 
 	if p.conn.isUndoServer {
-		return p.undoSession.activateVolatile(p)
+		return p.undoSession.activateVolatile(&p.conn)
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target
