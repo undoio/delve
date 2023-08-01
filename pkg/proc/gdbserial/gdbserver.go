@@ -806,7 +806,7 @@ const (
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
 		// Clear interrupt (and enable progress indication)
-		_, err := p.conn.undoCmd("clear_interrupt")
+		_, err := undoCmd(&p.conn, "clear_interrupt")
 		if err != nil {
 			return nil, proc.StopUnknown, err
 		}
@@ -815,7 +815,7 @@ func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, 
 	trapthread, stopReason, err := p.continueOnceWorker(cctx)
 
 	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
-		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
+		_, reset_err := undoCmd(&p.conn, "reset_progress_indicator")
 		if reset_err != nil {
 			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
 		}
@@ -1097,7 +1097,7 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 			panic("attempted to restart in volatile mode.")
 		}
 		// Clear interrupt (and enable progress indication)
-		_, err := p.conn.undoCmd("clear_interrupt")
+		_, err := undoCmd(&p.conn, "clear_interrupt")
 		if err != nil {
 			return nil, err
 		}
@@ -1110,7 +1110,7 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 			// Restart should not change our volatile mode state.
 			panic("in volatile mode after restart.")
 		}
-		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
+		_, reset_err := undoCmd(&p.conn, "reset_progress_indicator")
 		if reset_err != nil {
 			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
 		}

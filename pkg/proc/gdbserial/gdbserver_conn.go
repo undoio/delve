@@ -1180,23 +1180,6 @@ func (conn *gdbConn) qRRCmd(args ...string) (string, error) {
 	return string(data), nil
 }
 
-// undoCmd executes a vUDB command
-func (conn *gdbConn) undoCmd(args ...string) (string, error) {
-	if len(args) == 0 {
-		panic("must specify at least one argument for undoCmd")
-	}
-	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vUDB")
-	for _, arg := range args {
-		fmt.Fprint(&conn.outbuf, ";", arg)
-	}
-	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
-	if err != nil {
-		return "", err
-	}
-	return string(resp), nil
-}
-
 type imageList struct {
 	Images []imageDescription `json:"images"`
 }

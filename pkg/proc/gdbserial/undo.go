@@ -39,6 +39,23 @@ func newUndoSession() *undoSession {
 	}
 }
 
+// undoCmd executes a vUDB command
+func undoCmd(conn *gdbConn, args ...string) (string, error) {
+	if len(args) == 0 {
+		panic("must specify at least one argument for undoCmd")
+	}
+	conn.outbuf.Reset()
+	fmt.Fprint(&conn.outbuf, "$vUDB")
+	for _, arg := range args {
+		fmt.Fprint(&conn.outbuf, ";", arg)
+	}
+	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
+	if err != nil {
+		return "", err
+	}
+	return string(resp), nil
+}
+
 // Validate a checkpoint note to ensure easy interopability with UDB bookmarks.
 // Returns nil (no error) if a checkpoint is validated successfully.
 func validateCheckpointNote(where string) error {
@@ -79,7 +96,7 @@ func (uc *undoSession) createCheckpoint(conn *gdbConn, where string) (int, error
 	}
 	cpid := uc.checkpointNextId
 	uc.checkpointNextId++
-	when, err := conn.undoCmd("get_time")
+	when, err := undoCmd(conn, "get_time")
 	if err != nil {
 		return -1, err
 	}
@@ -144,7 +161,7 @@ func getSessionPath(conn *gdbConn) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	recording_ids, err := conn.undoCmd("get_recording_ids")
+	recording_ids, err := undoCmd(conn, "get_recording_ids")
 	if err != nil {
 		return "", err
 	}
@@ -326,7 +343,7 @@ func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
 		// TODO: is defaulting to zero if we can't get it correct?
 		minBbCount := "0"
 
-		extent, err := conn.undoCmd("get_log_extent")
+		extent, err := undoCmd(conn, "get_log_extent")
 		if err != nil {
 			return err
 		}
@@ -335,11 +352,11 @@ func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
 			minBbCount = extent[:index]
 		}
 
-		_, err = conn.undoCmd("goto_time", minBbCount, "0")
+		_, err = undoCmd(conn, "goto_time", minBbCount, "0")
 	case "end":
-		_, err = conn.undoCmd("goto_record_mode")
+		_, err = undoCmd(conn, "goto_record_mode")
 	default:
-		_, err = conn.undoCmd("goto_time", pos)
+		_, err = undoCmd(conn, "goto_time", pos)
 	}
 	return err
 }
@@ -352,14 +369,14 @@ func (uc *undoSession) activateVolatile(conn *gdbConn) (func(), error) {
 	if uc.volatile {
 		panic("tried to activate volatile mode when already active.")
 	}
-	_, err := conn.undoCmd("set_debuggee_volatile", "1")
+	_, err := undoCmd(conn, "set_debuggee_volatile", "1")
 	if err != nil {
 		return nil, err
 	}
 	uc.volatile = true
 	return func() {
 		uc.volatile = false
-		_, _ = conn.undoCmd("set_debuggee_volatile", "0")
+		_, _ = undoCmd(conn, "set_debuggee_volatile", "0")
 	}, nil
 }
 
@@ -546,7 +563,7 @@ func UndoIsRecording(recordingFile string) (result bool, err error) {
 // This is not (currently) implementing a proper parse of the data returned, just making it more
 // convenient to search.
 func undoGetInfo(conn *gdbConn) ([]string, error) {
-	info, err := conn.undoCmd("get_info")
+	info, err := undoCmd(conn, "get_info")
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +575,7 @@ func undoGetInfo(conn *gdbConn) ([]string, error) {
 
 // Fetch the mininum and maximum bbcounts of recorded history.
 func undoGetLogExtent(conn *gdbConn) (uint64, uint64, error) {
-	extent, err := conn.undoCmd("get_log_extent")
+	extent, err := undoCmd(conn, "get_log_extent")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -688,7 +705,7 @@ func undoParseServerTime(resp string) (uint64, uint64, error) {
 
 // Fetch a representation of the current time as a string.
 func undoWhen(conn *gdbConn) (string, error) {
-	resp, err := conn.undoCmd("get_time")
+	resp, err := undoCmd(conn, "get_time")
 	if err != nil {
 		return "", err
 	}
