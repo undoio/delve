@@ -166,9 +166,6 @@ type gdbProcess struct {
 	waitChan chan *os.ProcessState
 
 	onDetach func() // called after a successful detach
-
-	// State relating to the Undo session - present when conn.isUndoServer is set.
-	undoSession *undoSession
 }
 
 var _ proc.RecordingManipulationInternal = &gdbProcess{}
@@ -807,7 +804,7 @@ const (
 // The real work is accomplished in continueOnceWorker, this wrapper just handles udbserver's progress
 // indicators.
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
-	if p.conn.isUndoServer && !p.undoSession.volatile {
+	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
 		// Clear interrupt (and enable progress indication)
 		_, err := p.conn.undoCmd("clear_interrupt")
 		if err != nil {
@@ -817,7 +814,7 @@ func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, 
 
 	trapthread, stopReason, err := p.continueOnceWorker(cctx)
 
-	if p.conn.isUndoServer && !p.undoSession.volatile {
+	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
 		_, reset_err := p.conn.undoCmd("reset_progress_indicator")
 		if reset_err != nil {
 			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
@@ -897,7 +894,7 @@ continueLoop:
 			p.almostExited = true
 
 			exit_code := 0
-			if p.conn.isUndoServer {
+			if p.conn.undoSession != nil {
 				// Retrieve the exit code of the recorded process (if applicable)
 				// from udbserver.
 				exit_code, err = undoGetExitCode(&p.conn)
@@ -1093,8 +1090,8 @@ func (p *gdbProcess) Detach(kill bool) error {
 // The real work is accomplished in restartWorker, this wrapper just handles udbserver's progress
 // indicators.
 func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
-	if p.conn.isUndoServer {
-		if p.undoSession.volatile {
+	if p.conn.undoSession != nil {
+		if p.conn.undoSession.volatile {
 			// We should only be in volatile mode during an inferior call, so this case
 			// should not be possible.
 			panic("attempted to restart in volatile mode.")
@@ -1108,8 +1105,8 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 
 	currentThread, err := p.restartWorker(cctx, pos)
 
-	if p.conn.isUndoServer {
-		if p.undoSession.volatile {
+	if p.conn.undoSession != nil {
+		if p.conn.undoSession.volatile {
 			// Restart should not change our volatile mode state.
 			panic("in volatile mode after restart.")
 		}
@@ -1132,9 +1129,9 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 	}
 
 	// Is this a checkpoint on a server using local checkpoints?
-	if p.conn.isUndoServer {
+	if p.conn.undoSession != nil {
 		var err error
-		pos, err = p.undoSession.resolveUserTime(pos)
+		pos, err = p.conn.undoSession.resolveUserTime(pos)
 		if err != nil {
 			return nil, err
 		}
@@ -1150,8 +1147,8 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 	p.ctrlC = false
 
 	var err error
-	if p.conn.isUndoServer {
-		err = p.undoSession.travelToTime(&p.conn, pos)
+	if p.conn.undoSession != nil {
+		err = p.conn.undoSession.travelToTime(&p.conn, pos)
 	} else {
 		err = p.conn.restart(pos)
 	}
@@ -1161,7 +1158,7 @@ func (p *gdbProcess) restartWorker(cctx *proc.ContinueOnceContext, pos string) (
 
 	// for some reason we have to send a vCont;c after a vRun to make rr behave
 	// properly, because that's what gdb does.
-	if !p.conn.isUndoServer {
+	if p.conn.undoSession == nil {
 		_, err = p.conn.resume(cctx, nil, nil)
 		if err != nil {
 			return nil, err
@@ -1189,7 +1186,7 @@ func (p *gdbProcess) When() (string, error) {
 		return "", proc.ErrNotRecorded
 	}
 	result := ""
-	if p.conn.isUndoServer {
+	if p.conn.undoSession != nil {
 		when, err := undoWhen(&p.conn)
 		if err != nil {
 			return "", err
@@ -1216,8 +1213,8 @@ func (p *gdbProcess) Checkpoint(where string) (int, error) {
 	}
 
 	// Handle locally managed checkpoints first
-	if p.conn.isUndoServer {
-		return p.undoSession.createCheckpoint(&p.conn, where)
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.createCheckpoint(&p.conn, where)
 	}
 
 	resp, err := p.conn.qRRCmd("checkpoint", where)
@@ -1250,8 +1247,8 @@ func (p *gdbProcess) Checkpoints() ([]proc.Checkpoint, error) {
 	}
 
 	// Handle locally managed checkpoints first
-	if p.conn.isUndoServer {
-		return p.undoSession.getCheckpoints()
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.getCheckpoints()
 	}
 
 	resp, err := p.conn.qRRCmd("info checkpoints")
@@ -1286,8 +1283,8 @@ func (p *gdbProcess) ClearCheckpoint(id int) error {
 	}
 
 	// Handle locally managed checkpoints first
-	if p.conn.isUndoServer {
-		p.undoSession.deleteCheckpoint(&p.conn, id)
+	if p.conn.undoSession != nil {
+		p.conn.undoSession.deleteCheckpoint(&p.conn, id)
 		// We don't care if it didn't exist
 		return nil
 	}
@@ -1335,8 +1332,8 @@ func (p *gdbProcess) StartCallInjection() (func(), error) {
 		return nil, ErrStartCallInjectionBackwards
 	}
 
-	if p.conn.isUndoServer {
-		return p.undoSession.activateVolatile(&p.conn)
+	if p.conn.undoSession != nil {
+		return p.conn.undoSession.activateVolatile(&p.conn)
 	}
 
 	// Normally it's impossible to inject function calls in a recorded target

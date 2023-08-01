@@ -24,9 +24,6 @@ import (
 //
 // The current checkpoints are persisted to disk in an "Undo session file" via the save() method.
 // They are restored via the load() method.
-//
-// See also: isUndoServer on the gdbConn structure - when that is set, the undoSession member on the
-// gdbProcess structure should point to an instance of this structure.
 type undoSession struct {
 	checkpointNextId int                     // For allocating checkpoint IDs
 	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
@@ -490,16 +487,15 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 		return nil, err
 	}
 
-	// set to cause gdbserver.go to treat incoming signal numbers according
-	// to the GDB mapping, not the Linux mapping (the binutils-gdb repo
-	// defines the GDB mapping in include/gdb/signals.def)
-	p.conn.isUndoServer = true
-
-	// Create storage for Undo checkpoints, which (unlike rr) aren't stored in the server.
-	p.undoSession = newUndoSession()
+	// Create storage for Undo-related state.
+	//
+	// This being non-nil indicates the use of an Undo backend, which selects alternative
+	// implementations for various functions and handles certain events (such as
+	// gdbserial stop packets) differently.
+	p.conn.undoSession = newUndoSession()
 
 	// Load the session details if possible (discarding errors, which are non-fatal).
-	_ = p.undoSession.load(&p.conn)
+	_ = p.conn.undoSession.load(&p.conn)
 
 	return tgt, nil
 }
