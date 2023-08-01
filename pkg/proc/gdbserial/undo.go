@@ -321,12 +321,25 @@ func (uc *undoSession) resolveUserTime(pos string) (string, error) {
 func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
 	var err error
 	switch pos {
-	case "start":
-		err = conn.restart("")
+	case "start", "":
+		// Find the actual min BB count.
+		// TODO: is defaulting to zero if we can't get it correct?
+		minBbCount := "0"
+
+		extent, err := conn.undoCmd("get_log_extent")
+		if err != nil {
+			return err
+		}
+		index := strings.Index(extent, ",")
+		if index > 0 {
+			minBbCount = extent[:index]
+		}
+
+		_, err = conn.undoCmd("goto_time", minBbCount, "0")
 	case "end":
 		_, err = conn.undoCmd("goto_record_mode")
 	default:
-		err = conn.restart(pos)
+		_, err = conn.undoCmd("goto_time", pos)
 	}
 	return err
 }

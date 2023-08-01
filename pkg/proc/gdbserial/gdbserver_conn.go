@@ -1145,25 +1145,7 @@ func (conn *gdbConn) restart(pos string) error {
 	conn.outbuf.Reset()
 
 	if conn.undoSession != nil {
-		if pos != "" {
-			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s", pos)
-		} else {
-			// Find the actual min BB count.
-			// TODO: is defaulting to zero if we can't get it correct?
-			minBbCount := "0"
-
-			extent, err := conn.undoCmd("get_log_extent")
-			if err != nil {
-				return err
-			}
-			index := strings.Index(extent, ",")
-			if index > 0 {
-				minBbCount = extent[:index]
-			}
-
-			conn.outbuf.Reset()
-			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s;0", minBbCount)
-		}
+		panic("restart serial operation called with an Undo backend")
 	} else {
 		fmt.Fprint(&conn.outbuf, "$vRun;")
 		if pos != "" {
