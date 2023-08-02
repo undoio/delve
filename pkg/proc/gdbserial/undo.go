@@ -336,28 +336,21 @@ func (uc *undoSession) resolveUserTime(pos string) (string, error) {
 // Move the replay process to the a point in time. The "pos" argument should be obtained by calling
 // resolveUserTime to ensure that it is valid.
 func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
-	var err error
+	var args []string
 	switch pos {
 	case "start", "":
 		// Find the actual min BB count.
-		// TODO: is defaulting to zero if we can't get it correct?
-		minBbCount := "0"
-
-		extent, err := undoCmd(conn, "get_log_extent")
+		minBbCount, _, err := undoGetLogExtent(conn)
 		if err != nil {
 			return err
 		}
-		index := strings.Index(extent, ",")
-		if index > 0 {
-			minBbCount = extent[:index]
-		}
-
-		_, err = undoCmd(conn, "goto_time", minBbCount, "0")
+		args = []string{"goto_time", fmt.Sprint(minBbCount), "0"}
 	case "end":
-		_, err = undoCmd(conn, "goto_record_mode")
+		args = []string{"goto_record_mode"}
 	default:
-		_, err = undoCmd(conn, "goto_time", pos)
+		args = []string{"goto_time", pos}
 	}
+	_, err := undoCmd(conn, args...)
 	return err
 }
 
