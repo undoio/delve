@@ -48,7 +48,8 @@ type gdbConn struct {
 
 	useXcmd bool // forces writeMemory to use the 'X' command
 
-	isUndoServer bool // true if using an Undo backend
+	// State relating to the Undo session - non-nil when using an Undo backend.
+	undoSession *undoSession
 
 	log logflags.Logger
 }
@@ -806,7 +807,7 @@ func (conn *gdbConn) parseStopPacket(resp []byte, threadID string, tu *threadUpd
 			}
 		}
 
-		if conn.isUndoServer {
+		if conn.undoSession != nil {
 			// Transform packet, if necessary, for instance at the end of time.
 			sp, err = undoHandleStopPacket(conn, sp)
 			if err != nil {
@@ -1143,26 +1144,8 @@ func (conn *gdbConn) threadStopInfo(threadID string) (sp stopPacket, err error) 
 func (conn *gdbConn) restart(pos string) error {
 	conn.outbuf.Reset()
 
-	if conn.isUndoServer {
-		if pos != "" {
-			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s", pos)
-		} else {
-			// Find the actual min BB count.
-			// TODO: is defaulting to zero if we can't get it correct?
-			minBbCount := "0"
-
-			extent, err := conn.undoCmd("get_log_extent")
-			if err != nil {
-				return err
-			}
-			index := strings.Index(extent, ",")
-			if index > 0 {
-				minBbCount = extent[:index]
-			}
-
-			conn.outbuf.Reset()
-			fmt.Fprintf(&conn.outbuf, "$vUDB;goto_time;%s;0", minBbCount)
-		}
+	if conn.undoSession != nil {
+		panic("restart serial operation called with an Undo backend")
 	} else {
 		fmt.Fprint(&conn.outbuf, "$vRun;")
 		if pos != "" {
@@ -1195,23 +1178,6 @@ func (conn *gdbConn) qRRCmd(args ...string) (string, error) {
 		data = append(data, uint8(n))
 	}
 	return string(data), nil
-}
-
-// undoCmd executes a vUDB command
-func (conn *gdbConn) undoCmd(args ...string) (string, error) {
-	if len(args) == 0 {
-		panic("must specify at least one argument for undoCmd")
-	}
-	conn.outbuf.Reset()
-	fmt.Fprint(&conn.outbuf, "$vUDB")
-	for _, arg := range args {
-		fmt.Fprint(&conn.outbuf, ";", arg)
-	}
-	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
-	if err != nil {
-		return "", err
-	}
-	return string(resp), nil
 }
 
 type imageList struct {
