@@ -467,7 +467,7 @@ func UndoRecord(cmd []string, wd string, quiet bool, redirects [3]string) (recor
 		// Recording apparently failed to put anything in the file
 		os.Remove(recording)
 		if err == nil {
-			err = fmt.Errorf("Recording failed")
+			err = fmt.Errorf("recording failed")
 		}
 		return "", err
 	}
