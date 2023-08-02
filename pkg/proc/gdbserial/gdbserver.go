@@ -804,9 +804,8 @@ const (
 // The real work is accomplished in continueOnceWorker, this wrapper just handles udbserver's progress
 // indicators.
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
-	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
-		// Clear interrupt (and enable progress indication)
-		_, err := undoCmd(&p.conn, "clear_interrupt")
+	if p.conn.undoSession != nil {
+		err := p.conn.undoSession.continuePre(&p.conn)
 		if err != nil {
 			return nil, proc.StopUnknown, err
 		}
@@ -814,13 +813,10 @@ func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, 
 
 	trapthread, stopReason, err := p.continueOnceWorker(cctx)
 
-	if p.conn.undoSession != nil && !p.conn.undoSession.volatile {
-		_, reset_err := undoCmd(&p.conn, "reset_progress_indicator")
-		if reset_err != nil {
-			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
-		}
+	if p.conn.undoSession != nil {
+		post_err := p.conn.undoSession.continuePost(&p.conn)
 		if err == nil {
-			err = reset_err
+			err = post_err
 		}
 	}
 
@@ -1091,13 +1087,7 @@ func (p *gdbProcess) Detach(kill bool) error {
 // indicators.
 func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.Thread, error) {
 	if p.conn.undoSession != nil {
-		if p.conn.undoSession.volatile {
-			// We should only be in volatile mode during an inferior call, so this case
-			// should not be possible.
-			panic("attempted to restart in volatile mode.")
-		}
-		// Clear interrupt (and enable progress indication)
-		_, err := undoCmd(&p.conn, "clear_interrupt")
+		err := p.conn.undoSession.restartPre(&p.conn)
 		if err != nil {
 			return nil, err
 		}
@@ -1106,16 +1096,9 @@ func (p *gdbProcess) Restart(cctx *proc.ContinueOnceContext, pos string) (proc.T
 	currentThread, err := p.restartWorker(cctx, pos)
 
 	if p.conn.undoSession != nil {
-		if p.conn.undoSession.volatile {
-			// Restart should not change our volatile mode state.
-			panic("in volatile mode after restart.")
-		}
-		_, reset_err := undoCmd(&p.conn, "reset_progress_indicator")
-		if reset_err != nil {
-			p.conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
-		}
+		post_err := p.conn.undoSession.restartPost(&p.conn)
 		if err == nil {
-			err = reset_err
+			err = post_err
 		}
 	}
 
