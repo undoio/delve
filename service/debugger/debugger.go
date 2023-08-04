@@ -21,16 +21,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/gobuild"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/locspec"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/core"
-	"github.com/go-delve/delve/pkg/proc/gdbserial"
-	"github.com/go-delve/delve/pkg/proc/native"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/gobuild"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/locspec"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/core"
+	"github.com/undoio/delve/pkg/proc/gdbserial"
+	"github.com/undoio/delve/pkg/proc/native"
+	"github.com/undoio/delve/service/api"
 )
 
 var (
@@ -177,6 +177,9 @@ func New(config *Config, processArgs []string) (*Debugger, error) {
 		case "rr":
 			d.log.Infof("opening trace %s", d.config.CoreFile)
 			d.target, err = gdbserial.Replay(d.config.CoreFile, false, false, d.config.DebugInfoDirectories, d.config.RrOnProcessPid, "")
+		case "undo":
+			d.log.Infof("opening recording %s", d.config.CoreFile)
+			d.target, err = gdbserial.UndoReplay(d.config.CoreFile, "", false, d.config.DebugInfoDirectories, "")
 		default:
 			d.log.Infof("opening core file %s (executable %s)", d.config.CoreFile, d.processArgs[0])
 			d.target, err = core.OpenCore(d.config.CoreFile, d.processArgs[0], d.config.DebugInfoDirectories)
@@ -300,6 +303,9 @@ func (d *Debugger) Launch(processArgs []string, wd string) (*proc.TargetGroup, e
 			}
 		}()
 		return nil, nil
+	case "undo":
+		tgt, _, err := gdbserial.UndoRecordAndReplay(processArgs, wd, false, d.config.DebugInfoDirectories, d.config.Redirects)
+		return tgt, err
 
 	case "default":
 		if runtime.GOOS == "darwin" {
@@ -500,7 +506,7 @@ func (d *Debugger) Restart(rerecord bool, pos string, resetArgs bool, newArgs []
 		}
 	}
 
-	if recorded {
+	if recorded && d.config.Backend == "rr" {
 		run, stop, err2 := gdbserial.RecordAsync(d.processArgs, d.config.WorkingDir, false, d.config.Redirects)
 		if err2 != nil {
 			return nil, err2
@@ -509,6 +515,8 @@ func (d *Debugger) Restart(rerecord bool, pos string, resetArgs bool, newArgs []
 		d.recordingStart(stop)
 		grp, err = d.recordingRun(run)
 		d.recordingDone()
+	} else if recorded && d.config.Backend == "undo" {
+		grp, _, err = gdbserial.UndoRecordAndReplay(d.processArgs, d.config.WorkingDir, false, d.config.DebugInfoDirectories, d.config.Redirects)
 	} else {
 		grp, err = d.Launch(d.processArgs, d.config.WorkingDir)
 	}
@@ -2080,8 +2088,8 @@ func (d *Debugger) ExamineMemory(address uint64, length int) ([]byte, error) {
 
 func (d *Debugger) GetVersion(out *api.GetVersionOut) error {
 	if d.config.CoreFile != "" {
-		if d.config.Backend == "rr" {
-			out.Backend = "rr"
+		if d.config.Backend == "rr" || d.config.Backend == "undo" {
+			out.Backend = d.config.Backend
 		} else {
 			out.Backend = "core"
 		}

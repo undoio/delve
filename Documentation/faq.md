@@ -118,7 +118,7 @@ The `sources` command could also be useful in troubleshooting this problem, it s
 
 For more informations on path substitution see [path substitution](cli/substitutepath.md).
 
-If you still think this is a bug in Delve and not a configuration problem, open an [issue](https://github.com/go-delve/delve/issues), filling the issue template and including the logs produced by delve with the options `--log --log-output=rpc,dap`.
+If you still think this is a bug in Delve and not a configuration problem, open an [issue](https://github.com/undoio/delve/delve/issues), filling the issue template and including the logs produced by delve with the options `--log --log-output=rpc,dap`.
 
 ### <a name="runtime"></a> Using Delve to debug the Go runtime
 

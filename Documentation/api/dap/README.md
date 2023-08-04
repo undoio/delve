@@ -17,7 +17,7 @@ detailed [debugging documentation](https://github.com/golang/vscode-go/blob/mast
 
 [DAP](https://microsoft.github.io/debug-adapter-protocol/specification) is a general debugging protocol supported by many [tools](https://microsoft.github.io/debug-adapter-protocol/implementors/tools/) and [programming languages](https://microsoft.github.io/debug-adapter-protocol/implementors/adapters/). We tailored it to Go specifics, such as mapping [threads request](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Threads) to communicate goroutines and [exceptionInfo request](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_ExceptionInfo) to support panics and fatal errors.
 
-See [dap.Server.handleRequest](https://github.com/go-delve/delve/search?q=handleRequest) and capabilities set in [dap.Server.onInitializeRequest](https://github.com/go-delve/delve/search?q=onInitializeRequest) for an up-to-date list of supported requests and options.
+See [dap.Server.handleRequest](https://github.com/undoio/delve/search?q=handleRequest) and capabilities set in [dap.Server.onInitializeRequest](https://github.com/undoio/delve/search?q=onInitializeRequest) for an up-to-date list of supported requests and options.
 
 ## Launch and Attach Configurations
 
@@ -25,7 +25,7 @@ In addition to the general [DAP spec](https://microsoft.github.io/debug-adapter-
 
 <table border=1>
 <tr><th>request<th>mode<th>required<th colspan=9>optional<th></tr>
-<tr><td rowspan=5>launch<br><a href="https://pkg.go.dev/github.com/go-delve/delve/service/dap#LaunchConfig">godoc</a>
+<tr><td rowspan=5>launch<br><a href="https://pkg.go.dev/github.com/undoio/delve/service/dap#LaunchConfig">godoc</a>
     <td>debug<td>program               <td>dlvCwd<td>env<td>backend<td>args<td>cwd<td>buildFlags<td>output<td>noDebug
     <td rowspan=7>
     substitutePath<br>
@@ -44,12 +44,11 @@ In addition to the general [DAP spec](https://microsoft.github.io/debug-adapter-
     <td>core<td>program<br>corefilePath<td>dlvCwd<td>env<td>       <td>    <td>   <td>          <td>      <td>       </tr>
 <tr>
     <td>replay<td>traceDirPath         <td>dlvCwd<td>env<td>       <td>    <td>   <td>          <td>      <td>       </tr>
-<tr><td rowspan=2>attach<br><a href="https://pkg.go.dev/github.com/go-delve/delve/service/dap#AttachConfig">godoc</a>
+<tr><td rowspan=2>attach<br><a href="https://pkg.go.dev/github.com/undoio/delve/service/dap#AttachConfig">godoc</a>
     <td>local<td>processId             <td>      <td>   <td>backend<td>   <td>    <td>          <td>      <td>        </tr>
 <tr>
     <td>remote<td>                     <td>      <td>   <td>       <td>   <td>    <td>          <td>      <td>        </tr>
 </table>
-
 
 Not all of the configurations are supported by each of the two available DAP servers:
 
@@ -65,7 +64,7 @@ Not all of the configurations are supported by each of the two available DAP ser
 </tr>
 <tr>
 <td>attach<td>"remote"<td>NOT supported<td>supported<td>Tells the `dlv --headless` server that it is expected to already be debugging a target specified as part of its command-line invocation.
-<td>The client would expect `host:port` specification of an external (a.k.a. remote) server that the user already started with target <a href="https://github.com/go-delve/delve/blob/master/Documentation/usage/README.md">command and args</a>.
+<td>The client would expect `host:port` specification of an external (a.k.a. remote) server that the user already started with target <a href="https://github.com/undoio/delve/blob/master/Documentation/usage/README.md">command and args</a>.
 </tr>
 </table>
 

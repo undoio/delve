@@ -6,7 +6,7 @@ import (
 
 	sys "golang.org/x/sys/windows"
 
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 const enableHardwareBreakpoints = false // see https://github.com/go-delve/delve/issues/2768

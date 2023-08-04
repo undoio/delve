@@ -5,8 +5,8 @@ import (
 	"debug/dwarf"
 	"encoding/binary"
 
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/leb128"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/leb128"
 )
 
 // Form represents a DWARF form kind (see Figure 20, page 160 and following,
