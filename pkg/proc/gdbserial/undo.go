@@ -28,6 +28,7 @@ type undoSession struct {
 	checkpointNextId int                     // For allocating checkpoint IDs
 	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
 	volatile         bool                    // Is the Undo connection currently in volatile mode?
+	sessionState     *session                // The most recently loaded / saved session state file contents.
 }
 
 // Create a new undoSession structure.
@@ -36,6 +37,7 @@ func newUndoSession() *undoSession {
 		checkpointNextId: 1,
 		checkpoints:      make(map[int]proc.Checkpoint),
 		volatile:         false,
+		sessionState:     nil,
 	}
 }
 
@@ -151,8 +153,27 @@ type bookmarkTime struct {
 }
 
 // Represents the overall structure of our session file format.
+//
+// Delve can only generate complete state for a v0 session file (which just contains the bookmarks
+// data). When saving state for a recording that does not already have a session file it will use
+// version 1.
+//
+// When saving state for a recording that already had a session file it will use that same format
+// again at save time. That means it will pass through, unmodified, any of the UDB-only fields.
+//
+// To make this happen, all fields from the v1 telemetry format are tagged "omitempty".
 type session struct {
-	Bookmarks map[string]bookmarkTime `json:"bookmarks"`
+	Version               int                     `json:"version,omitempty"`
+	Bookmarks             map[string]bookmarkTime `json:"bookmarks"`
+	UndoStack             interface{}             `json:"undo_stack,omitempty"`
+	UndoStackIndex        interface{}             `json:"undo_stack_index,omitempty"`
+	Breakpoints           interface{}             `json:"breakpoints,omitempty"`
+	BreakpointsMax        interface{}             `json:"breakpoints_max,omitempty"`
+	TimeLimits            interface{}             `json:"time_limits,omitempty"`
+	WallClockTimeZone     interface{}             `json:"wallclock_timezone,omitempty"`
+	ReplayStandardStreams interface{}             `json:"replay_standard_streams,omitempty"`
+	SelectedTid           interface{}             `json:"selected_tid,omitempty"`
+	SignalStance          interface{}             `json:"signal_stance,omitempty"`
 }
 
 // Get the path to the UDB session file for the current recording.
@@ -203,17 +224,21 @@ func (uc *undoSession) load(conn *gdbConn) error {
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
 
-	var s session
-	err = decoder.Decode(&s)
+	// Clear out the session data.
+	*uc = *newUndoSession()
+
+	uc.sessionState = &session{}
+	err = decoder.Decode(uc.sessionState)
 	if err != nil {
 		return err
 	}
 
-	// Clear out the session data.
-	*uc = *newUndoSession()
+	if uc.sessionState.Version != 0 && uc.sessionState.Version != 1 {
+		return fmt.Errorf("Unknown session version %d in file %s", uc.sessionState.Version, path)
+	}
 
 	// Translate the loaded Undo bookmarks into Delve checkpoints.
-	for name, position := range s.Bookmarks {
+	for name, position := range uc.sessionState.Bookmarks {
 		cpid := uc.checkpointNextId
 		uc.checkpointNextId++
 		uc.checkpoints[cpid] = proc.Checkpoint{
@@ -229,8 +254,17 @@ func (uc *undoSession) load(conn *gdbConn) error {
 // Save the session file for the current recording.
 func (uc *undoSession) save(conn *gdbConn) error {
 	// Translate Delve checkpoints into Undo bookmarks.
-	var s session
-	s.Bookmarks = make(map[string]bookmarkTime)
+	if uc.sessionState == nil {
+		// If we don't already have a session state cached from a previous load then we'll
+		// use a version 0 representation as Delve doesn't generate appropriate state for
+		// the other fields in the version 1 format.
+		//
+		// All new-to-v1 fields are tagged "omitempty" and will not be written out.
+		uc.sessionState = &session{
+			Version: 0,
+		}
+	}
+	uc.sessionState.Bookmarks = make(map[string]bookmarkTime)
 
 	// Local copy of the checkpoints.
 	var checkpoints []proc.Checkpoint
@@ -253,7 +287,7 @@ func (uc *undoSession) save(conn *gdbConn) error {
 		// be unique.
 		base_name := cp.Where
 		name := base_name
-		for i := 0; s.Bookmarks[name] != (bookmarkTime{}); i++ {
+		for i := 0; uc.sessionState.Bookmarks[name] != (bookmarkTime{}); i++ {
 			name = fmt.Sprintf("%s-%d", base_name, i)
 		}
 
@@ -262,7 +296,7 @@ func (uc *undoSession) save(conn *gdbConn) error {
 		if err != nil {
 			return err
 		}
-		s.Bookmarks[name] = time
+		uc.sessionState.Bookmarks[name] = time
 	}
 
 	path, err := getSessionPath(conn)
@@ -278,7 +312,7 @@ func (uc *undoSession) save(conn *gdbConn) error {
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "    ")
-	err = encoder.Encode(&s)
+	err = encoder.Encode(uc.sessionState)
 	if err != nil {
 		return err
 	}
