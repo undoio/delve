@@ -555,7 +555,7 @@ func UndoRecord(cmd []string, wd string, quiet bool, redirects [3]string) (recor
 	return recording, err
 }
 
-func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []string, cmdline string) (tgt *proc.TargetGroup, err error) {
+func UndoReplay(recording string, quiet bool, debugInfoDirs []string, cmdline string) (tgt *proc.TargetGroup, err error) {
 	if err := UndoIsAvailable(); err != nil {
 		return nil, err
 	}
@@ -590,12 +590,6 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 	}
 
 	p := newProcess(servercmd.Process)
-	p.tracedir = recording
-	tgt, err = p.Dial(port, path, cmdline, 0, debugInfoDirs, proc.StopAttached)
-	if err != nil {
-		servercmd.Process.Kill()
-		return nil, err
-	}
 
 	// Create storage for Undo-related state.
 	//
@@ -603,6 +597,13 @@ func UndoReplay(recording string, path string, quiet bool, debugInfoDirs []strin
 	// implementations for various functions and handles certain events (such as
 	// gdbserial stop packets) differently.
 	p.conn.undoSession = newUndoSession()
+
+	p.tracedir = recording
+	tgt, err = p.Dial(port, "", cmdline, 0, debugInfoDirs, proc.StopAttached)
+	if err != nil {
+		servercmd.Process.Kill()
+		return nil, err
+	}
 
 	// Load the session details if possible (discarding errors, which are non-fatal).
 	_ = p.conn.undoSession.load(&p.conn)
@@ -616,7 +617,7 @@ func UndoRecordAndReplay(cmd []string, wd string, quiet bool, debugInfoDirs []st
 	if err != nil || recording == "" {
 		return nil, "", err
 	}
-	tgt, err = UndoReplay(recording, cmd[0], quiet, debugInfoDirs, strings.Join(cmd, " "))
+	tgt, err = UndoReplay(recording, quiet, debugInfoDirs, strings.Join(cmd, " "))
 	return tgt, recording, err
 }
 
@@ -636,6 +637,31 @@ func UndoIsRecording(recordingFile string) (result bool, err error) {
 	}
 
 	return bytes.Equal(marker, data), nil
+}
+
+// Fetch the local path to the main executable in a recording.
+//
+// This should always be present in a recording and can then be queried for symbol information, etc.
+func undoGetExePath(conn *gdbConn) (string, error) {
+	path, err := undoCmd(conn, "get_load_exe_original")
+	if err != nil {
+		return "", err
+	}
+	path, ok := decodeHexString([]byte(path))
+	if !ok {
+		return "", errors.New("failed to decode load exe")
+	}
+
+	tmpdir, err := undoCmd(conn, "get_tmpdir")
+	if err != nil {
+		return "", err
+	}
+	tmpdir, ok = decodeHexString([]byte(tmpdir))
+	if !ok {
+		return "", errors.New("failed to decode tmpdir")
+	}
+
+	return filepath.Join(tmpdir, "symbol-files", path), nil
 }
 
 // Fetch the output of a udbserver get_info command, split on ; and , characters.

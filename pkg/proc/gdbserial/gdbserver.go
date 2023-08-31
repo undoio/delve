@@ -656,6 +656,16 @@ func (p *gdbProcess) EntryPoint() (uint64, error) {
 // stubs will report both the PID and executable path.
 func (p *gdbProcess) initialize(path, cmdline string, debugInfoDirs []string, stopReason proc.StopReason) (*proc.TargetGroup, error) {
 	var err error
+
+	if p.conn.undoSession != nil {
+		// Always use the path from the recording file, so that we have consistent debug
+		// symbols. Allowing the user to specify other paths is out of scope for now.
+		path, err = undoGetExePath(&p.conn)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if path == "" {
 		// If we are attaching to a running process and the user didn't specify
 		// the executable file manually we must ask the stub for it.
