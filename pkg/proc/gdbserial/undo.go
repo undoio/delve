@@ -174,6 +174,9 @@ type session struct {
 	ReplayStandardStreams interface{}             `json:"replay_standard_streams,omitempty"`
 	SelectedTid           interface{}             `json:"selected_tid,omitempty"`
 	SignalStance          interface{}             `json:"signal_stance,omitempty"`
+	SubstitutePaths       interface{}             `json:"substitute_paths,omitempty"`
+	ConvenienceVariables  interface{}             `json:"convenience_variables,omitempty"`
+	TelemetryId           interface{}             `json:"telemetry_id,omitempty"`
 }
 
 // Get the path to the UDB session file for the current recording.
