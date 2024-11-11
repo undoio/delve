@@ -700,18 +700,24 @@ func undoGetLogExtent(conn *gdbConn) (uint64, uint64, error) {
 	return bbcount_min, bbcount_max, nil
 }
 
-// Fetch whether the replay session is currently at the end of recorded history.
-func undoAtEndOfHistory(conn *gdbConn) (bool, error) {
-	info_fields, err := undoGetInfo(conn)
-	if err != nil {
-		return false, err
-	}
+// Fetch whether the replay session is currently at the start of recorded history.
+func undoInfoAtStart(info_fields []string) bool {
 	for _, value := range info_fields {
-		if value == "has_exited" || value == "at_event_log_end" {
-			return true, nil
+		if value == "at_event_log_start" {
+			return true
 		}
 	}
-	return false, nil
+	return false
+}
+
+// Fetch whether the replay session is currently at the end of recorded history.
+func undoInfoAtEnd(info_fields []string) bool {
+	for _, value := range info_fields {
+		if value == "has_exited" || value == "at_event_log_end" {
+			return true
+		}
+	}
+	return false
 }
 
 // Transform a stopPacket if necessary to represent the state of the replay session.
@@ -726,15 +732,25 @@ func undoHandleStopPacket(conn *gdbConn, sp stopPacket) (stopPacket, error) {
 	// TODO: find a different way of indicating the start of history (currently registers as a
 	// "hardcoded breakpoint") - should we use the atstart flag that rr uses somehow?.
 
-	at_end, err := undoAtEndOfHistory(conn)
+	info_fields, err := undoGetInfo(conn)
 	if err != nil {
 		return stopPacket{}, err
 	}
 
+	at_end := undoInfoAtEnd(info_fields)
 	if at_end {
 		// Mirror the behaviour of rr, in which the server will send a fake SIGKILL
 		// at the end of history.
 		sp.sig = _SIGKILL
+		return sp, nil
+	}
+
+	at_start := undoInfoAtStart(info_fields)
+	if at_start {
+		// Mirror the behaviour of rr, in which the server will send a fake Signal 0 when it
+		// reaches the start of the process history.
+		sp.sig = 0
+		return sp, nil
 	}
 
 	return sp, nil
