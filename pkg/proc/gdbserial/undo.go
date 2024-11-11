@@ -713,7 +713,7 @@ func undoInfoAtStart(info_fields []string) bool {
 // Fetch whether the replay session is currently at the end of recorded history.
 func undoInfoAtEnd(info_fields []string) bool {
 	for _, value := range info_fields {
-		if value == "has_exited" || value == "at_event_log_end" {
+		if value == "has_exited" || value == "just_exited" || value == "at_event_log_end" {
 			return true
 		}
 	}
@@ -765,7 +765,8 @@ func undoGetExitCode(conn *gdbConn) (int, error) {
 	}
 
 	for idx, value := range info_fields {
-		if value != "has_exited" {
+		// Support older and newer serial protocol behaviour.
+		if value != "just_exited" && value != "has_exited" {
 			continue
 		}
 
