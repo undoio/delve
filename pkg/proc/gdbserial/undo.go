@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/undoio/delve/pkg/proc"
+	"golang.org/x/mod/semver"
 )
 
 // State relating to an Undo "session" - used to correctly interpret and handle time-travel
@@ -513,6 +515,35 @@ func UndoIsAvailable() error {
 			return &ErrBackendUnavailable{}
 		}
 	}
+
+	/* Check we're using a sufficiently new version of Undo */
+	versionCmd := exec.Command(server, "--version")
+	var out strings.Builder
+	versionCmd.Stdout = &out
+	err = versionCmd.Run()
+	if err != nil {
+		return &ErrBackendUnavailable{
+			Detail: "unable to check Undo version",
+		}
+	}
+
+	versionRe := regexp.MustCompile("^udbserver ([0-9]+\\.[0-9]+\\.[0-9]+)")
+	matches := versionRe.FindStringSubmatch(out.String())
+	if len(matches) != 2 {
+		return &ErrBackendUnavailable{
+			Detail: "unable to check Undo version from " + out.String(),
+		}
+	}
+
+	const MinimumVersion = "v8.2.0"
+
+	/* The semver package requires a leading 'v', so add one */
+	if semver.Compare("v"+matches[1], MinimumVersion) < 0 {
+		return &ErrBackendUnavailable{
+			Detail: "Undo version " + matches[1] + " too old (required " + MinimumVersion + ")",
+		}
+	}
+
 	return nil
 }
 
