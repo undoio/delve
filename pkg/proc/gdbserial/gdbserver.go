@@ -187,9 +187,14 @@ type gdbThread struct {
 }
 
 // ErrBackendUnavailable is returned when the stub program can not be found.
-type ErrBackendUnavailable struct{}
+type ErrBackendUnavailable struct {
+	Detail string
+}
 
 func (err *ErrBackendUnavailable) Error() string {
+	if len(err.Detail) > 0 {
+		return err.Detail
+	}
 	return "backend unavailable"
 }
 
