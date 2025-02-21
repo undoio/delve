@@ -497,12 +497,14 @@ func serverPath() (string, error) {
 	}
 
 	udb_dir_abs := filepath.Dir(udb_path_abs)
-	cmd_path := filepath.Join(udb_dir_abs, server_file)
+	cmd_path := filepath.Join(udb_dir_abs, "tools", server_file)
 
 	return cmd_path, nil
 }
 
 func UndoIsAvailable() error {
+	const MinimumVersion = "v8.2.0"
+
 	server, err := serverPath()
 	if err != nil {
 		return err
@@ -512,7 +514,8 @@ func UndoIsAvailable() error {
 
 	for _, cmd := range cmds {
 		if _, err := exec.LookPath(cmd); err != nil {
-			return &ErrBackendUnavailable{}
+			return &ErrBackendUnavailable{
+				Detail: "unable to find an Undo " + MinimumVersion + "+ installation on the current PATH"}
 		}
 	}
 
@@ -534,8 +537,6 @@ func UndoIsAvailable() error {
 			Detail: "unable to check Undo version from " + out.String(),
 		}
 	}
-
-	const MinimumVersion = "v8.2.0"
 
 	/* The semver package requires a leading 'v', so add one */
 	if semver.Compare("v"+matches[1], MinimumVersion) < 0 {
