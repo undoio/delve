@@ -313,7 +313,7 @@ func UndoRecord(cmd []string, wd string, quiet bool, stdin string, stdout proc.O
 	return recording, err
 }
 
-func UndoReplay(recording string, quiet bool, debugInfoDirs []string, cmdline string) (tgt *proc.TargetGroup, err error) {
+func UndoReplay(recording string, exePath string, quiet bool, debugInfoDirs []string, cmdline string) (tgt *proc.TargetGroup, err error) {
 	if err := UndoIsAvailable(); err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func UndoReplay(recording string, quiet bool, debugInfoDirs []string, cmdline st
 	p.conn.undoSession = newUndoSession()
 
 	p.tracedir = recording
-	tgt, err = p.Dial(port, "", cmdline, 0, debugInfoDirs, proc.StopAttached)
+	tgt, err = p.Dial(port, exePath, cmdline, 0, debugInfoDirs, proc.StopAttached)
 	if err != nil {
 		servercmd.Process.Kill()
 		return nil, err
@@ -372,7 +372,7 @@ func UndoRecordAndReplay(cmd []string, wd string, quiet bool, debugInfoDirs []st
 	if err != nil || recording == "" {
 		return nil, "", err
 	}
-	tgt, err = UndoReplay(recording, quiet, debugInfoDirs, strings.Join(cmd, " "))
+	tgt, err = UndoReplay(recording, "", quiet, debugInfoDirs, strings.Join(cmd, " "))
 	return tgt, recording, err
 }
 
