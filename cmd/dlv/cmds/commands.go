@@ -100,6 +100,9 @@ var (
 	loadConfErr error
 
 	rrOnProcessPid int
+	// External unstripped executable to use for symbols while replaying an Undo recording.
+	// TODO: Support this for rr backend.
+	replaySymbolFile string
 
 	attachWaitFor         string
 	attachWaitForInterval float64
@@ -427,7 +430,7 @@ Currently supports linux/amd64 and linux/arm64 core files, windows/amd64 minidum
 
 	if rrAvailable || undoAvailable {
 		replayCommand := &cobra.Command{
-			Use:   "replay [trace directory or LiveRecorder recording]",
+			Use:   "replay <trace directory or LiveRecorder recording>",
 			Short: "Replays a rr trace or LiveRecorder recording.",
 			Long: `Replays a rr trace or LiveRecorder recording.
 
@@ -442,12 +445,18 @@ Either Mozilla rr (https://github.com/mozilla/rr) or UDB (https://undo.io) must 
 				return nil
 			},
 			Run: func(cmd *cobra.Command, args []string) {
-				if isUndo, _ := gdbserial.UndoIsRecording(args[0]); isUndo {
+				recording := args[0]
+
+				if isUndo, _ := gdbserial.UndoIsRecording(recording); isUndo {
 					backend = "undo"
 				} else {
 					backend = "rr"
+					if replaySymbolFile != "" {
+						fmt.Fprintf(os.Stderr, "Separate symbol file is not supported with rr backend.\n")
+						os.Exit(1)
+					}
 				}
-				os.Exit(execute(0, []string{}, conf, args[0], debugger.ExecutingOther, args, buildFlags))
+				os.Exit(execute(0, []string{replaySymbolFile}, conf, recording, debugger.ExecutingOther, args, buildFlags))
 			},
 			ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 				if len(args) > 2 {
@@ -456,6 +465,7 @@ Either Mozilla rr (https://github.com/mozilla/rr) or UDB (https://undo.io) must 
 				return nil, cobra.ShellCompDirectiveDefault
 			},
 		}
+		replayCommand.Flags().StringVarP(&replaySymbolFile, "symbol-file", "", "", "External unstripped executable for debug symbol lookups while replaying a recording.")
 
 		replayCommand.Flags().IntVarP(&rrOnProcessPid, "onprocess", "p", 0,
 			"Pass onprocess pid to rr.")
