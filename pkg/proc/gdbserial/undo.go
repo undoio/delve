@@ -196,10 +196,17 @@ func getSessionPath(conn *gdbConn) (string, error) {
 		panic("unexpected response from get_recording_ids")
 	}
 
+	// This directory is used to determine where the sessions are stored, unless XDG_DATA_HOME
+	// is set.
+	home_dir, present := os.LookupEnv("HOME")
+	if !present {
+		home_dir = user.HomeDir
+	}
+
 	// This directory stores sessions.
 	xdg_data_dir, present := os.LookupEnv("XDG_DATA_HOME")
 	if !present {
-		xdg_data_dir = filepath.Join(user.HomeDir, ".local", "share")
+		xdg_data_dir = filepath.Join(home_dir, ".local", "share")
 	}
 	undo_sessions_dir := filepath.Join(xdg_data_dir, "undo", "sessions")
 
