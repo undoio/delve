@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/proc"
-	protest "github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/proc"
+	protest "github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/service/api"
 )
 
 type nextTest struct {
@@ -433,8 +433,8 @@ func TestInlineStepOut(t *testing.T) {
 }
 
 func TestBackwardNextGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -464,8 +464,8 @@ func TestBackwardNextGeneral(t *testing.T) {
 }
 
 func TestBackwardStepOutGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -476,8 +476,8 @@ func TestBackwardStepOutGeneral(t *testing.T) {
 }
 
 func TestBackwardStepGeneral(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	testseq2(t, "testnextprog", "main.helloworld", []seqTest{
 		{contContinue, 13},
@@ -515,8 +515,8 @@ func TestBackwardStepGeneral(t *testing.T) {
 }
 
 func TestBackwardNextDeferPanic(t *testing.T) {
-	if testBackend != "rr" {
-		t.Skip("Reverse stepping test needs rr")
+	if testBackend != "rr" && testBackend != "undo" {
+		t.Skip("Reverse stepping test needs rr or undo")
 	}
 	if goversion.VersionAfterOrEqual(runtime.Version(), 1, 18) {
 		testseq2(t, "defercall", "", []seqTest{

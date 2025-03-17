@@ -164,7 +164,7 @@ func main() {
 // setup parses the proc package, extracting all +rtype comments and
 // converting them into rules.
 func setup() {
-	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax, Fset: fset}, "github.com/go-delve/delve/pkg/proc")
+	pkgs, err := packages.Load(&packages.Config{Mode: packages.LoadSyntax, Fset: fset}, "github.com/undoio/delve/pkg/proc")
 	if err != nil {
 		log.Fatalf("could not load proc package: %v", err)
 	}
@@ -313,7 +313,7 @@ func isProcVariableDecl(stmt ast.Stmt, tinfo *types.Info) *ast.Ident {
 	if typ == nil {
 		return nil
 	}
-	if typ == nil || typ.String() != "*github.com/go-delve/delve/pkg/proc.Variable" {
+	if typ == nil || typ.String() != "*github.com/undoio/delve/pkg/proc.Variable" {
 		return nil
 	}
 	return ident

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"unsafe"
 
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/dwarf/regnum"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/regnum"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 // AMD64Registers represents CPU registers on an AMD64 processor.

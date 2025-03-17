@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
-	"github.com/go-delve/delve/pkg/dwarf/op"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 // ConvertLogicalBreakpoint converts a proc.LogicalBreakpoint into an API breakpoint.

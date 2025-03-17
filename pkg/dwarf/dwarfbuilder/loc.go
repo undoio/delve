@@ -3,8 +3,8 @@ package dwarfbuilder
 import (
 	"bytes"
 
-	"github.com/go-delve/delve/pkg/dwarf/leb128"
-	"github.com/go-delve/delve/pkg/dwarf/op"
+	"github.com/undoio/delve/pkg/dwarf/leb128"
+	"github.com/undoio/delve/pkg/dwarf/op"
 )
 
 // LocEntry represents one entry of debug_loc.

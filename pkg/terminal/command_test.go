@@ -16,15 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-delve/delve/pkg/config"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc/test"
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/debugger"
-	"github.com/go-delve/delve/service/rpc2"
-	"github.com/go-delve/delve/service/rpccommon"
+	"github.com/undoio/delve/pkg/config"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc/test"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/debugger"
+	"github.com/undoio/delve/service/rpc2"
+	"github.com/undoio/delve/service/rpccommon"
 )
 
 var testBackend, buildMode string
@@ -118,7 +118,7 @@ func withTestTerminal(name string, t testing.TB, fn func(*FakeTerminal)) {
 }
 
 func withTestTerminalBuildFlags(name string, t testing.TB, buildFlags test.BuildFlags, fn func(*FakeTerminal)) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		test.MustHaveRecordingAllowed(t)
 	}
 	t.Setenv("TERM", "dumb")
@@ -291,6 +291,7 @@ func TestTraceOnNonFunctionEntry(t *testing.T) {
 }
 
 func TestExitStatus(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
 		term.Exec("continue")
 		status, err := term.handleExit()
@@ -622,7 +623,7 @@ func TestListCmd(t *testing.T) {
 
 func TestReverseContinue(t *testing.T) {
 	test.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return
 	}
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
@@ -636,7 +637,7 @@ func TestReverseContinue(t *testing.T) {
 
 func TestCheckpoints(t *testing.T) {
 	test.AllowRecording(t)
-	if testBackend != "rr" {
+	if testBackend != "rr" && testBackend != "undo" {
 		return
 	}
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
@@ -862,6 +863,7 @@ func TestConfig(t *testing.T) {
 func TestIssue1090(t *testing.T) {
 	// Exit while executing 'next' should report the "Process exited" error
 	// message instead of crashing.
+	test.AllowRecording(t)
 	withTestTerminal("math", t, func(term *FakeTerminal) {
 		term.MustExec("break main.main")
 		term.MustExec("continue")
@@ -878,6 +880,7 @@ func TestPrintContextParkedGoroutine(t *testing.T) {
 	if runtime.GOARCH == "ppc64le" && buildMode == "pie" {
 		t.Skip("pie mode broken on ppc64le")
 	}
+	test.AllowRecording(t)
 	withTestTerminal("goroutinestackprog", t, func(term *FakeTerminal) {
 		term.MustExec("break stacktraceme")
 		term.MustExec("continue")
@@ -917,6 +920,7 @@ func TestStepOutReturn(t *testing.T) {
 	if ver.Major >= 0 && !ver.AfterOrEqual(goversion.GoVersion{Major: 1, Minor: 10, Rev: -1}) {
 		t.Skip("return variables aren't marked on 1.9 or earlier")
 	}
+	test.AllowRecording(t)
 	withTestTerminal("stepoutret", t, func(term *FakeTerminal) {
 		term.MustExec("break main.stepout")
 		term.MustExec("continue")
@@ -929,6 +933,7 @@ func TestStepOutReturn(t *testing.T) {
 }
 
 func TestOptimizationCheck(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
 		term.MustExec("break main.main")
 		out := term.MustExec("continue")
@@ -955,6 +960,7 @@ func TestTruncateStacktrace(t *testing.T) {
 		t.Skip("pie mode broken on ppc64le")
 	}
 	const stacktraceTruncatedMessage = "(truncated)"
+	test.AllowRecording(t)
 	withTestTerminal("stacktraceprog", t, func(term *FakeTerminal) {
 		term.MustExec("break main.stacktraceme")
 		term.MustExec("continue")
@@ -1111,6 +1117,7 @@ func TestExamineMemoryCmd(t *testing.T) {
 }
 
 func TestPrintOnTracepoint(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("increment", t, func(term *FakeTerminal) {
 		term.MustExec("trace main.Increment")
 		term.MustExec("on 1 print y+1")
@@ -1177,6 +1184,7 @@ func TestParseNewArgv(t *testing.T) {
 }
 
 func TestContinueUntil(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
 		if runtime.GOARCH != "386" {
 			listIsAt(t, term, "continue main.main", 16, -1, -1)
@@ -1188,6 +1196,7 @@ func TestContinueUntil(t *testing.T) {
 }
 
 func TestContinueUntilExistingBreakpoint(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("continuetestprog", t, func(term *FakeTerminal) {
 		term.MustExec("break main.main")
 		if runtime.GOARCH != "386" {
@@ -1210,6 +1219,7 @@ func TestPrintFormat(t *testing.T) {
 }
 
 func TestHitCondBreakpoint(t *testing.T) {
+	test.AllowRecording(t)
 	withTestTerminal("break", t, func(term *FakeTerminal) {
 		term.MustExec("break bp1 main.main:4")
 		term.MustExec("condition -hitcount bp1 > 2")
