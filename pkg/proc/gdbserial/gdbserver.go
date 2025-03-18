@@ -687,7 +687,7 @@ func (p *gdbProcess) EntryPoint() (uint64, error) {
 func (p *gdbProcess) initialize(path, cmdline string, debugInfoDirs []string, stopReason proc.StopReason) (*proc.TargetGroup, error) {
 	var err error
 
-	if p.conn.undoSession != nil {
+	if path == "" && p.conn.undoSession != nil {
 		// Always use the path from the recording file, so that we have consistent debug
 		// symbols. Allowing the user to specify other paths is out of scope for now.
 		path, err = undoGetExePath(&p.conn)
