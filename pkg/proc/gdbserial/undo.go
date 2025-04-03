@@ -408,14 +408,14 @@ func (uc *undoSession) activateVolatile(conn *gdbConn) (func(), error) {
 	if uc.volatile {
 		panic("tried to activate volatile mode when already active.")
 	}
-	_, err := undoCmd(conn, "set_debuggee_volatile", "1")
+	_, err := undoCmd(conn, "set_volatile_mode", "1")
 	if err != nil {
 		return nil, err
 	}
 	uc.volatile = true
 	return func() {
 		uc.volatile = false
-		_, _ = undoCmd(conn, "set_debuggee_volatile", "0")
+		_, _ = undoCmd(conn, "set_volatile_mode", "0")
 	}, nil
 }
 
