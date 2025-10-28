@@ -192,8 +192,10 @@ func getSessionPath(conn *gdbConn) (string, error) {
 		return "", err
 	}
 	uuids := strings.Split(recording_ids, ";")
-	if len(uuids) != 3 || uuids[1] == "" {
-		panic("unexpected response from get_recording_ids")
+	// We may get 3 or 4 UUIDs depending on the version of the server, since more recent
+	// versions also return a common UUID for the whole process tree.
+	if n := len(uuids); n < 3 || n > 4 || uuids[1] == "" {
+		panic(fmt.Sprintf("unexpected response from get_recording_ids: got %d UUIDs: %v", n, uuids))
 	}
 
 	// This directory is used to determine where the sessions are stored, unless XDG_DATA_HOME
