@@ -175,8 +175,11 @@ type session struct {
 	WallClockTimeZone     interface{}             `json:"wallclock_timezone,omitempty"`
 	ReplayStandardStreams interface{}             `json:"replay_standard_streams,omitempty"`
 	SelectedTid           interface{}             `json:"selected_tid,omitempty"`
+	SharedLibraryPaths    interface{}             `json:"shared_library_search_paths,omitempty"`
 	SignalStance          interface{}             `json:"signal_stance,omitempty"`
+	SourceDirectories     interface{}             `json:"source_directories,omitempty"`
 	SubstitutePaths       interface{}             `json:"substitute_paths,omitempty"`
+	Sysroot               interface{}             `json:"sysroot,omitempty"`
 	ConvenienceVariables  interface{}             `json:"convenience_variables,omitempty"`
 	TelemetryId           interface{}             `json:"telemetry_id,omitempty"`
 }
