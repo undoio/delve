@@ -467,12 +467,22 @@ func (c *Client) StepBackRequest() {
 
 // StepOverBackRequest sends an 'undo/StepOverBack' request.
 func (c *Client) StepOverBackRequest() {
-	c.send(&dap.StepOverBackRequest{Request: *c.newRequest("undo/stepOverBack")})
+	c.send(&StepOverBackRequest{Request: *c.newRequest("undo/stepOverBack")})
 }
 
 // StepOutBackRequest sends an 'undo/StepOutBack' request.
 func (c *Client) StepOutBackRequest() {
-	c.send(&dap.StepOutBackRequest{Request: *c.newRequest("undo/stepOutBack")})
+	c.send(&StepOutBackRequest{Request: *c.newRequest("undo/stepOutBack")})
+}
+
+// GotoStartRequest sends an 'undo/gotoStart' request.
+func (c *Client) GotoStartRequest() {
+	c.send(&GotoStartRequest{Request: *c.newRequest("undo/gotoStart")})
+}
+
+// GotoEndRequest sends an 'undo/gotoEnd' request.
+func (c *Client) GotoEndRequest() {
+	c.send(&GotoEndRequest{Request: *c.newRequest("undo/gotoEnd")})
 }
 
 // ReverseContinueRequest sends a 'reverseContinue' request.
