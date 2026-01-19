@@ -761,6 +761,18 @@ func (s *Session) handleRequest(request dap.Message) {
 			s.onStepOutBackRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
+	case *GotoStartRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoStartRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *GotoEndRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoEndRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
 	case *dap.ReverseContinueRequest: // Optional (capability 'supportsStepBack')
 		go func() {
 			defer s.recoverPanic(request)
@@ -3088,6 +3100,61 @@ func (s *Session) onStepOverBackRequest(request *StepOverBackRequest, allowNextS
 func (s *Session) onStepOutBackRequest(request *StepOutBackRequest, allowNextStateChange *syncflag) {
 	s.sendStepResponse(request.Arguments.ThreadId, &StepOutBackResponse{Response: *newResponse(request.Request)})
 	s.stepUntilStopAndNotify(api.ReverseStepOut, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// doGoto handles the machinery of the 'undo/gotoStart', 'undo/gotoEnd' and 'undo/gotoCheckpoint' requests.
+// These are custom requests supported by Undo's Delve fork.
+func (s *Session) doGoto(request dap.Request, response dap.Message, dest string, allowNextStateChange *syncflag) {
+	defer allowNextStateChange.raise()
+
+	// We tell the client that the debuggee has been "continued" so it will expect a stop event.
+	s.send(&dap.ContinuedEvent{
+		Event: *newEvent("continued"),
+		Body: dap.ContinuedEventBody{
+			ThreadId:            1,
+			AllThreadsContinued: true,
+		},
+	})
+	// Respond to the request.
+	s.send(response)
+
+	// Do the time travel - this call is synchronous but can take some time depending on when
+	// the destination is and what snapshots are available.
+	_, err := s.debugger.Restart(false, dest, false, nil, [3]string{}, false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	// Refresh our view of debugger state so we can update the client.
+	state, err := s.debugger.State(false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	// We attempt to roughly match behaviour the behaviour of stopping after a step / continue
+	// here, since there's no stop reason for an explicit time jump.
+	s.resetHandlesForStoppedEvent()
+	stopped := dap.StoppedEvent{
+		Event: *newEvent("stopped"),
+		Body: dap.StoppedEventBody{
+			Reason:            "step",
+			ThreadId:          int(stoppedGoroutineID(state)),
+			AllThreadsStopped: true,
+		},
+	}
+	s.send(&stopped)
+}
+
+// onGotoStartRequest handles the 'undo/gotoStart' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoStartRequest(request *GotoStartRequest, allowNextStateChange *syncflag) {
+	s.doGoto(request.Request, &GotoStartResponse{Response: *newResponse(request.Request)}, "start", allowNextStateChange)
+}
+
+// onGotoEndRequest handles the 'undo/gotoEnd' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoEndRequest(request *GotoEndRequest, allowNextStateChange *syncflag) {
+	s.doGoto(request.Request, &GotoEndResponse{Response: *newResponse(request.Request)}, "end", allowNextStateChange)
 }
 
 // onReverseContinueRequest performs a rewind command call up to the previous
