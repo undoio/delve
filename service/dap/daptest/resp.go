@@ -922,6 +922,42 @@ func (c *Client) CheckStepBackResponse(t *testing.T, m dap.Message) *dap.StepBac
 	return r
 }
 
+// ExpectStepOverBackResponse reads a protocol message from the connection
+// and fails the test if the read message is not *StepOverBackResponse.
+func (c *Client) ExpectStepOverBackResponse(t *testing.T) *StepOverBackResponse {
+	t.Helper()
+	m := c.ExpectMessage(t)
+	return c.CheckStepOverBackResponse(t, m)
+}
+
+// CheckStepOverBackResponse fails the test if m is not *StepOverBackResponse.
+func (c *Client) CheckStepOverBackResponse(t *testing.T, m dap.Message) *StepOverBackResponse {
+	t.Helper()
+	r, ok := m.(*StepOverBackResponse)
+	if !ok {
+		t.Fatalf("got %#v, want *dap.StepOverBackResponse", m)
+	}
+	return r
+}
+
+// ExpectStepOutBackResponse reads a protocol message from the connection
+// and fails the test if the read message is not *StepOutBackResponse.
+func (c *Client) ExpectOutStepBackResponse(t *testing.T) *StepOutBackResponse {
+	t.Helper()
+	m := c.ExpectMessage(t)
+	return c.CheckStepOutBackResponse(t, m)
+}
+
+// CheckStepOutBackResponse fails the test if m is not *StepOutBackResponse.
+func (c *Client) CheckStepOutBackResponse(t *testing.T, m dap.Message) *StepOutBackResponse {
+	t.Helper()
+	r, ok := m.(*StepOutBackResponse)
+	if !ok {
+		t.Fatalf("got %#v, want *dap.StepOutBackResponse", m)
+	}
+	return r
+}
+
 // ExpectStepInResponse reads a protocol message from the connection
 // and fails the test if the read message is not *StepInResponse.
 func (c *Client) ExpectStepInResponse(t *testing.T) *dap.StepInResponse {
