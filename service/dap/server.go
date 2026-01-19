@@ -534,8 +534,20 @@ func (s *Session) ServeDAPCodec() {
 		}
 	}()
 	reader := bufio.NewReader(s.conn)
+
+	// This codec supports Undo's DAP extensions as well as standard DAP messages.
+	codec := makeUndoDapCodec()
 	for {
-		request, err := dap.ReadProtocolMessage(reader)
+		message, err := dap.ReadBaseMessage(reader)
+		s.config.log.Debug("Read base message: ", message, err)
+		// err will be handled by the common block below, if non-nil.
+
+		var request dap.Message
+		if err == nil {
+			request, err = codec.DecodeMessage(message)
+			s.config.log.Debug("Decoded message: ", request, err)
+		}
+
 		// Handle dap.DecodeProtocolMessageFieldError errors gracefully by responding with an ErrorResponse.
 		// For example:
 		// -- "Request command 'foo' is not supported" means we
@@ -731,10 +743,22 @@ func (s *Session) handleRequest(request dap.Message) {
 			s.onStepOutRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
-	case *dap.StepBackRequest: // Optional (capability 'supportsStepBack')
+	case *dap.StepBackRequest: // Optional (capability 'supportsStepBack' or Undo backend)
 		go func() {
 			defer s.recoverPanic(request)
 			s.onStepBackRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *StepOverBackRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onStepOverBackRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *StepOutBackRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onStepOutBackRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
 	case *dap.ReverseContinueRequest: // Optional (capability 'supportsStepBack')
@@ -3049,7 +3073,21 @@ func (s *Session) onRestartRequest(request *dap.RestartRequest) {
 // This is an optional request enabled by capability 'supportsStepBackRequest' or by the presence of an Undo backend.
 func (s *Session) onStepBackRequest(request *dap.StepBackRequest, allowNextStateChange *syncflag) {
 	s.sendStepResponse(request.Arguments.ThreadId, &dap.StepBackResponse{Response: *newResponse(request.Request)})
+	s.stepUntilStopAndNotify(api.ReverseStep, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// onStepOverBackRequest handles the 'undo/stepOverBack' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onStepOverBackRequest(request *StepOverBackRequest, allowNextStateChange *syncflag) {
+	s.sendStepResponse(request.Arguments.ThreadId, &StepOverBackResponse{Response: *newResponse(request.Request)})
 	s.stepUntilStopAndNotify(api.ReverseNext, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// onStepOutBackRequest handles the 'undo/stepOutBack' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onStepOutBackRequest(request *StepOutBackRequest, allowNextStateChange *syncflag) {
+	s.sendStepResponse(request.Arguments.ThreadId, &StepOutBackResponse{Response: *newResponse(request.Request)})
+	s.stepUntilStopAndNotify(api.ReverseStepOut, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
 }
 
 // onReverseContinueRequest performs a rewind command call up to the previous
