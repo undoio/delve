@@ -962,9 +962,13 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 			return
 		}
 
-		// Assign the rr trace directory path to debugger configuration
+		// Assign the rr trace directory or Undo recording path to debugger configuration
 		s.config.Debugger.CoreFile = args.TraceDirPath
-		args.Backend = "rr"
+
+		// Respect a valid replay backend if explicitly configured, otherwise default to rr.
+		if args.Backend != "rr" && args.Backend != "undo" {
+			args.Backend = "rr"
+		}
 	}
 	if args.Mode == "core" {
 		// Validate core dump path
@@ -1192,6 +1196,8 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 	}
 	// Enable StepBack controls on supported backends
 	if s.config.Debugger.Backend == "rr" {
+		// We don't enable the StepBack capability for the Undo backend as we use custom DAP
+		// extensions to get the job done.
 		s.send(&dap.CapabilitiesEvent{Event: *newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 	}
 
@@ -1993,6 +1999,8 @@ func (s *Session) onAttachRequest(request *dap.AttachRequest) {
 		}
 		// Enable StepBack controls on supported backends
 		if s.config.Debugger.Backend == "rr" {
+			// We don't enable the StepBack capability for the Undo backend as we use custom DAP
+			// extensions to get the job done.
 			s.send(&dap.CapabilitiesEvent{Event: *newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 		}
 		// Customize termination options for debugger and debuggee
@@ -3134,7 +3142,7 @@ func (s *Session) onRestartRequest(request *dap.RestartRequest) {
 }
 
 // onStepBackRequest handles 'stepBack' request.
-// This is an optional request enabled by capability 'supportsStepBackRequest'.
+// This is an optional request enabled by capability 'supportsStepBackRequest' or by the presence of an Undo backend.
 func (s *Session) onStepBackRequest(request *dap.StepBackRequest, allowNextStateChange *syncflag) {
 	s.sendStepResponse(request.Arguments.ThreadId, &dap.StepBackResponse{Response: *newResponse(request.Request)})
 	s.stepUntilStopAndNotify(api.ReverseNext, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
