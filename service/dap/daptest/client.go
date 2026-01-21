@@ -509,6 +509,41 @@ func (c *Client) GotoEndRequest() {
 	c.send(&GotoEndRequest{Request: *c.newRequest("undo/gotoEnd")})
 }
 
+// GotoCheckpointRequest sends an 'undo/gotoCheckpoint' request.
+func (c *Client) GotoCheckpointRequest(id int) {
+	c.send(&GotoCheckpointRequest{
+		Request: *c.newRequest("undo/gotoCheckpoint"),
+		Arguments: {
+			CheckpointId: id,
+		},
+	})
+}
+
+// CreateCheckpointRequest sends an 'undo/createCheckpoint' request.
+func (c *Client) CreateCheckpointRequest(label string) {
+	c.send(&CreateCheckpointRequest{
+		Request: *c.newRequest("undo/createCheckpoint"),
+		Arguments: {
+			Label: label,
+		},
+	})
+}
+
+// DeleteCheckpointRequest sends an 'undo/deleteCheckpoint' request.
+func (c *Client) DeleteCheckpointRequest(id int) {
+	c.send(&DeleteCheckpointRequest{
+		Request: *c.newRequest("undo/deleteCheckpoint"),
+		Arguments: {
+			CheckpointId: id,
+		},
+	})
+}
+
+// ListCheckpointsRequest sends an 'undo/listCheckpoints' request.
+func (c *Client) ListCheckpointsRequest() {
+	c.send(&ListCheckpointsRequest{Request: *c.newRequest("undo/listCheckpoints")})
+}
+
 // ReverseContinueRequest sends a 'reverseContinue' request.
 func (c *Client) ReverseContinueRequest() {
 	c.send(&dap.ReverseContinueRequest{Request: *c.newRequest("reverseContinue")})
