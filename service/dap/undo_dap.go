@@ -24,6 +24,34 @@ type GotoEndRequest struct {
 	dap.Request
 }
 
+type CheckpointArgs struct {
+	CheckpointId int `json:"id"`
+}
+
+type GotoCheckpointRequest struct {
+	dap.Request
+
+	Arguments CheckpointArgs
+}
+
+type ListCheckpointsRequest struct {
+	dap.Request
+}
+
+type CreateCheckpointRequest struct {
+	dap.Request
+
+	Arguments struct {
+		Label string `json:"label"`
+	}
+}
+
+type DeleteCheckpointRequest struct {
+	dap.Request
+
+	Arguments CheckpointArgs
+}
+
 type StepOverBackResponse struct {
 	dap.Response
 }
@@ -38,6 +66,40 @@ type GotoStartResponse struct {
 
 type GotoEndResponse struct {
 	dap.Response
+}
+
+type GotoCheckpointResponse struct {
+	dap.Response
+}
+
+type CreateCheckpointResponseBody struct {
+	Id int `json:"id"`
+}
+
+type CreateCheckpointResponse struct {
+	dap.Response
+
+	Body CreateCheckpointResponseBody `json:"body"`
+}
+
+type DeleteCheckpointResponse struct {
+	dap.Response
+}
+
+type Checkpoint struct {
+	Id    int    `json:"id"`
+	Label string `json:"label"`
+	Time  string `json:"time"`
+}
+
+type ListCheckpointsBody struct {
+	Checkpoints []Checkpoint `json:"checkpoints"`
+}
+
+type ListCheckpointsResponse struct {
+	dap.Response
+
+	Body ListCheckpointsBody `json:"body"`
 }
 
 func makeUndoDapCodec() *dap.Codec {
@@ -60,6 +122,26 @@ func makeUndoDapCodec() *dap.Codec {
 	codec.RegisterRequest("undo/gotoEnd",
 		func() dap.Message { return &GotoEndRequest{} },
 		func() dap.Message { return &GotoEndResponse{} },
+	)
+
+	codec.RegisterRequest("undo/gotoCheckpoint",
+		func() dap.Message { return &GotoCheckpointRequest{} },
+		func() dap.Message { return &GotoCheckpointResponse{} },
+	)
+
+	codec.RegisterRequest("undo/createCheckpoint",
+		func() dap.Message { return &CreateCheckpointRequest{} },
+		func() dap.Message { return &CreateCheckpointResponse{} },
+	)
+
+	codec.RegisterRequest("undo/deleteCheckpoint",
+		func() dap.Message { return &DeleteCheckpointRequest{} },
+		func() dap.Message { return &DeleteCheckpointResponse{} },
+	)
+
+	codec.RegisterRequest("undo/listCheckpoints",
+		func() dap.Message { return &ListCheckpointsRequest{} },
+		func() dap.Message { return &ListCheckpointsResponse{} },
 	)
 
 	return codec
