@@ -773,6 +773,12 @@ func (s *Session) handleRequest(request dap.Message) {
 			s.onGotoEndRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
+	case *GotoCheckpointRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoCheckpointRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
 	case *dap.ReverseContinueRequest: // Optional (capability 'supportsStepBack')
 		go func() {
 			defer s.recoverPanic(request)
@@ -804,6 +810,12 @@ func (s *Session) handleRequest(request dap.Message) {
 		s.onExceptionInfoRequest(request)
 	case *dap.DisassembleRequest: // Optional (capability 'supportsDisassembleRequest')
 		s.onDisassembleRequest(request)
+	case *CreateCheckpointRequest: // Custom (Undo backend)
+		s.onCreateCheckpointRequest(request)
+	case *DeleteCheckpointRequest: // Custom (Undo backend)
+		s.onDeleteCheckpointRequest(request)
+	case *ListCheckpointsRequest: // Custom (Undo backend)
+		s.onListCheckpointsRequest(request)
 	//--- Requests that we may want to support ---
 	case *dap.SourceRequest: // Required
 		/*TODO*/ s.sendUnsupportedErrorResponse(request.Request) // https://github.com/go-delve/delve/issues/2851
@@ -3155,6 +3167,64 @@ func (s *Session) onGotoStartRequest(request *GotoStartRequest, allowNextStateCh
 // This is a custom request supported by Undo's Delve fork.
 func (s *Session) onGotoEndRequest(request *GotoEndRequest, allowNextStateChange *syncflag) {
 	s.doGoto(request.Request, &GotoEndResponse{Response: *newResponse(request.Request)}, "end", allowNextStateChange)
+}
+
+// onGotoCheckpointRequest handles the 'undo/gotoCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoCheckpointRequest(request *GotoCheckpointRequest, allowNextStateChange *syncflag) {
+	dest := fmt.Sprintf("c%d", request.Arguments.CheckpointId)
+	s.doGoto(request.Request, &GotoCheckpointResponse{Response: *newResponse(request.Request)}, dest, allowNextStateChange)
+}
+
+// onCreateCheckpointRequest handles the 'undo/createCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onCreateCheckpointRequest(request *CreateCheckpointRequest) {
+	id, err := s.debugger.Checkpoint(request.Arguments.Label)
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	s.send(&CreateCheckpointResponse{
+		Response: *newResponse(request.Request),
+		Body:     CreateCheckpointResponseBody{Id: id},
+	})
+}
+
+// onDeleteCheckpointRequest handles the 'undo/deleteCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onDeleteCheckpointRequest(request *DeleteCheckpointRequest) {
+	err := s.debugger.ClearCheckpoint(request.Arguments.CheckpointId)
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	s.send(&DeleteCheckpointResponse{Response: *newResponse(request.Request)})
+}
+
+// onListCheckpointsRequest handles the 'undo/listCheckpoints' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onListCheckpointsRequest(request *ListCheckpointsRequest) {
+	checkpoints, err := s.debugger.Checkpoints()
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	response_checkpoints := make([]Checkpoint, 0, len(checkpoints))
+	for _, cp := range checkpoints {
+		response_checkpoints = append(response_checkpoints, Checkpoint{
+			Id:    cp.ID,
+			Label: cp.Where,
+			Time:  cp.When,
+		})
+	}
+
+	s.send(&ListCheckpointsResponse{
+		Response: *newResponse(request.Request),
+		Body:     ListCheckpointsBody{Checkpoints: response_checkpoints},
+	})
 }
 
 // onReverseContinueRequest performs a rewind command call up to the previous
