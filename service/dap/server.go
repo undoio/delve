@@ -854,6 +854,12 @@ func (s *Session) handleRequest(request dap.Message) {
 			s.onGotoCheckpointRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
+	case *LastValueRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onLastValueRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
 	case *dap.ReverseContinueRequest: // Optional (capability 'supportsStepBack')
 		go func() {
 			defer s.recoverPanic(request)
@@ -3518,6 +3524,119 @@ func (s *Session) onListCheckpointsRequest(request *ListCheckpointsRequest) {
 		Response: *newResponse(request.Request),
 		Body:     ListCheckpointsBody{Checkpoints: response_checkpoints},
 	})
+}
+
+func (s *Session) rewindWithWatchpoint(thread int64, frame int, expression string, allowNextStateChange *syncflag) (*api.DebuggerState, bool, error) {
+	wp, err := s.debugger.CreateWatchpoint(thread, frame, 0, expression, api.WatchWrite)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// We tell the client that the debuggee has been "continued" so it will expect a stop event.
+	s.send(&dap.ContinuedEvent{
+		Event: *newEvent("continued"),
+		Body: dap.ContinuedEventBody{
+			ThreadId:            int(thread),
+			AllThreadsContinued: true,
+		},
+	})
+
+	// Attempt to rewind.
+	state, err := s.runUntilStop(api.Rewind, allowNextStateChange)
+
+	// Clear up our watchpoint - we definitely don't need it anymore.
+	_, wp_err := s.debugger.ClearBreakpoint(wp)
+
+	err = errors.Join(err, wp_err)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return state, s.debugger.StopReason() == proc.StopWatchpoint, nil
+}
+
+// onLastValueRequest handles the 'undo/lastValue' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onLastValueRequest(request *LastValueRequest, allowNextStateChange *syncflag) {
+	defer allowNextStateChange.raise()
+
+	breakpoints := s.debugger.Breakpoints(true)
+	defer func() {
+		// On exit, restore the original status of all breakpoints.
+		for _, bp := range breakpoints {
+			s.debugger.AmendBreakpoint(bp)
+		}
+	}()
+
+	sf, ok := s.stackFrameHandles.get(request.Arguments.FrameId)
+	// Todo: Does sf.goroutineID mean we don't need the ThreadID argument?
+	if !ok {
+		s.sendErrorResponse(
+			request.Request,
+			UnableToSetBreakpoints,
+			"Unable to set watchpoint",
+			fmt.Sprintf("unknown frame id %d", request.Arguments.FrameId),
+		)
+		return
+	}
+
+	// Disable all breakpoints to avoid confusion with the watchpoint we'll create.
+	for _, bp := range breakpoints {
+		bp_disabled := *bp
+		bp_disabled.Disabled = true
+		s.debugger.AmendBreakpoint(&bp_disabled)
+	}
+
+	state_before, err := s.debugger.State(false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	state, found, err := s.rewindWithWatchpoint(
+		int64(request.Arguments.ThreadId),
+		sf.frameIndex,
+		request.Arguments.Expression,
+		allowNextStateChange,
+	)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+		return
+	}
+
+	// If we didn't find a value change then return to the initial point in time.
+	// Todo:
+	//  - probably need to restore current thread, frame, etc also.
+	//  - if we were already at the start of time a strange error comes out - investigate!
+	if !found {
+		_, err := s.debugger.Restart(false, state_before.When, false, nil, [3]string{}, false)
+		if err != nil {
+			s.sendInternalErrorResponse(request.Seq, err.Error())
+		}
+	}
+
+	s.send(&LastValueResponse{
+		Response: *newResponse(request.Request),
+		Body: LastValueResult{Found: found},
+	})
+
+	// We attempt to roughly match behaviour the behaviour of stopping after a step / continue
+	// here, since there's no stop reason for an explicit time jump.
+	s.resetHandlesForStoppedEvent()
+	stopped := dap.StoppedEvent{
+		Event: *newEvent("stopped"),
+		Body: dap.StoppedEventBody{
+			ThreadId:          int(stoppedGoroutineID(state)),
+			AllThreadsStopped: true,
+		},
+	}
+
+	if found {
+		stopped.Body.Reason = "data breakpoint"
+	} else {
+		stopped.Body.Reason = "step"
+	}
+
+	s.send(&stopped)
 }
 
 // onReverseContinueRequest performs a rewind command call up to the previous

@@ -52,6 +52,16 @@ type DeleteCheckpointRequest struct {
 	Arguments CheckpointArgs
 }
 
+type LastValueRequest struct {
+	dap.Request
+
+	Arguments struct {
+		Expression string `json:"expression"`
+		FrameId    int    `json:"frameId"`
+		ThreadId   int    `json:"threadId"`
+	}
+}
+
 type StepOverBackResponse struct {
 	dap.Response
 }
@@ -102,6 +112,16 @@ type ListCheckpointsResponse struct {
 	Body ListCheckpointsBody `json:"body"`
 }
 
+type LastValueResult struct {
+	Found bool
+}
+
+type LastValueResponse struct {
+	dap.Response
+
+	Body LastValueResult `json:"body"`
+}
+
 func makeUndoDapCodec() *dap.Codec {
 	codec := dap.NewCodec()
 	codec.RegisterRequest("undo/stepOverBack",
@@ -142,6 +162,11 @@ func makeUndoDapCodec() *dap.Codec {
 	codec.RegisterRequest("undo/listCheckpoints",
 		func() dap.Message { return &ListCheckpointsRequest{} },
 		func() dap.Message { return &ListCheckpointsResponse{} },
+	)
+
+	codec.RegisterRequest("undo/lastValue",
+		func() dap.Message { return &LastValueRequest{} },
+		func() dap.Message { return &LastValueResponse{} },
 	)
 
 	return codec
