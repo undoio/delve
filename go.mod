@@ -1,4 +1,4 @@
-module github.com/go-delve/delve
+module github.com/undoio/delve
 
 go 1.24
 
@@ -15,6 +15,7 @@ require (
 	github.com/spf13/pflag v1.0.6
 	go.starlark.net v0.0.0-20231101134539-556fd59b42f6
 	golang.org/x/arch v0.11.0
+	golang.org/x/mod v0.20.0
 	golang.org/x/sys v0.26.0
 	golang.org/x/telemetry v0.0.0-20241106142447-58a1122356f5
 	gopkg.in/yaml.v3 v3.0.1

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/config"
+	"github.com/undoio/delve/pkg/config"
 )
 
 func TestGoBuildArgsDashC(t *testing.T) {

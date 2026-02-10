@@ -1,0 +1,902 @@
+package gdbserial
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/undoio/delve/pkg/proc"
+	"golang.org/x/mod/semver"
+)
+
+// State relating to an Undo "session" - used to correctly interpret and handle time-travel
+// operations on a gdbConn when running with the Undo backend.
+//
+// The current checkpoints are persisted to disk in an "Undo session file" via the save() method.
+// They are restored via the load() method.
+type undoSession struct {
+	checkpointNextId int                     // For allocating checkpoint IDs
+	checkpoints      map[int]proc.Checkpoint // Map checkpoint IDs to Delve's proc.Checkpoint
+	volatile         bool                    // Is the Undo connection currently in volatile mode?
+	sessionState     *session                // The most recently loaded / saved session state file contents.
+}
+
+// Create a new undoSession structure.
+func newUndoSession() *undoSession {
+	return &undoSession{
+		checkpointNextId: 1,
+		checkpoints:      make(map[int]proc.Checkpoint),
+		volatile:         false,
+		sessionState:     nil,
+	}
+}
+
+// undoCmd executes a vUDB command
+func undoCmd(conn *gdbConn, args ...string) (string, error) {
+	if len(args) == 0 {
+		panic("must specify at least one argument for undoCmd")
+	}
+	conn.outbuf.Reset()
+	fmt.Fprint(&conn.outbuf, "$vUDB")
+	for _, arg := range args {
+		fmt.Fprint(&conn.outbuf, ";", arg)
+	}
+	resp, err := conn.exec(conn.outbuf.Bytes(), "undoCmd")
+	if err != nil {
+		return "", err
+	}
+	return string(resp), nil
+}
+
+// Validate a checkpoint note to ensure easy interopability with UDB bookmarks.
+// Returns nil (no error) if a checkpoint is validated successfully.
+func validateCheckpointNote(where string) error {
+	if where == "" {
+		panic("checkpoint note expectedly empty.")
+	}
+
+	// Perform matching checking to UDB's bookmark creation code, to ensure Delve notes
+	// translate properly into UDB bookmarks when we save the session.
+	//
+	// (compare Bookmarks._verify_name() in the UDB Python code)
+	firstChar := where[0:1]
+	if firstChar == " " {
+		return errors.New("checkpoint note must not start with a space.")
+	} else if _, err := strconv.Atoi(firstChar); err == nil {
+		return errors.New("checkpoint note must not start with a digit.")
+	} else if firstChar == "," || firstChar == "-" || firstChar == "$" {
+		return fmt.Errorf("checkpoint note must not start with character: %c", where[0])
+	} else {
+		firstWord := strings.Split(where, " ")[0]
+		reserved := []string{"annotation", "bookmark", "end", "event", "inferior", "pc",
+			"redo", "start", "time", "undo", "wallclock"}
+		for _, reservedWord := range reserved {
+			if firstWord == reservedWord {
+				return fmt.Errorf("checkpoint note must not start with reserved word: %s", reservedWord)
+			}
+		}
+	}
+
+	return nil
+}
+
+// Create a Delve checkpoint structure at the current time, with the supplied note.
+func (uc *undoSession) createCheckpoint(conn *gdbConn, where string) (int, error) {
+	err := validateCheckpointNote(where)
+	if err != nil {
+		return -1, err
+	}
+	cpid := uc.checkpointNextId
+	uc.checkpointNextId++
+	when, err := undoCmd(conn, "get_time")
+	if err != nil {
+		return -1, err
+	}
+	uc.checkpoints[cpid] = proc.Checkpoint{ID: cpid, When: when, Where: where}
+	uc.save(conn)
+	return cpid, nil
+}
+
+// Look up a Delve checkpoint structure by name.
+func (uc *undoSession) lookupCheckpoint(pos string) (proc.Checkpoint, error) {
+	if len(pos) == 0 {
+		panic("empty checkpoint name")
+	}
+	if pos[0] != 'c' {
+		panic("invalid checkpoint name")
+	}
+	cpid, _ := strconv.Atoi(pos[1:])
+	checkpoint, exists := uc.checkpoints[cpid]
+	if !exists {
+		return proc.Checkpoint{}, errors.New("checkpoint not found")
+	}
+	return checkpoint, nil
+}
+
+// Delete a Delve checkpoint structure from our tracking.
+func (uc *undoSession) deleteCheckpoint(conn *gdbConn, id int) {
+	delete(uc.checkpoints, id)
+	uc.save(conn)
+}
+
+// Fetch all Delve checkpoint structures and return an array for user display (with the When field
+// rewritten in human readable form).
+func (uc *undoSession) getCheckpoints() ([]proc.Checkpoint, error) {
+	r := make([]proc.Checkpoint, 0, len(uc.checkpoints))
+	for _, cp := range uc.checkpoints {
+		// Convert the internal representation of time (which is based on the serial
+		// protocol level representation) to a human-readable version for display.
+		bbcount, pc, err := undoParseServerTime(cp.When)
+		if err != nil {
+			return nil, err
+		}
+		cp.When = undoTimeString(bbcount, pc)
+		r = append(r, cp)
+	}
+	return r, nil
+}
+
+// Represents a single serialised bookmark in our session file format.
+type bookmarkTime struct {
+	Bbcount uint64 `json:"bbcount"`
+	Pc      uint64 `json:"pc"`
+}
+
+// Represents the overall structure of our session file format.
+//
+// Delve can only generate complete state for a v0 session file (which just contains the bookmarks
+// data). When saving state for a recording that does not already have a session file it will use
+// version 1.
+//
+// When saving state for a recording that already had a session file it will use that same format
+// again at save time. That means it will pass through, unmodified, any of the UDB-only fields.
+//
+// To make this happen, all fields from the v1 telemetry format are tagged "omitempty".
+type session struct {
+	Version               int                     `json:"version,omitempty"`
+	Bookmarks             map[string]bookmarkTime `json:"bookmarks"`
+	UndoStack             interface{}             `json:"undo_stack,omitempty"`
+	UndoStackIndex        interface{}             `json:"undo_stack_index,omitempty"`
+	Breakpoints           interface{}             `json:"breakpoints,omitempty"`
+	BreakpointsMax        interface{}             `json:"breakpoints_max,omitempty"`
+	TimeLimits            interface{}             `json:"time_limits,omitempty"`
+	WallClockTimeZone     interface{}             `json:"wallclock_timezone,omitempty"`
+	ReplayStandardStreams interface{}             `json:"replay_standard_streams,omitempty"`
+	SelectedTid           interface{}             `json:"selected_tid,omitempty"`
+	SharedLibraryPaths    interface{}             `json:"shared_library_search_paths,omitempty"`
+	SignalStance          interface{}             `json:"signal_stance,omitempty"`
+	SourceDirectories     interface{}             `json:"source_directories,omitempty"`
+	SubstitutePaths       interface{}             `json:"substitute_paths,omitempty"`
+	Sysroot               interface{}             `json:"sysroot,omitempty"`
+	ConvenienceVariables  interface{}             `json:"convenience_variables,omitempty"`
+	TelemetryId           interface{}             `json:"telemetry_id,omitempty"`
+}
+
+// Get the path to the UDB session file for the current recording.
+func getSessionPath(conn *gdbConn) (string, error) {
+	user, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	recording_ids, err := undoCmd(conn, "get_recording_ids")
+	if err != nil {
+		return "", err
+	}
+	uuids := strings.Split(recording_ids, ";")
+	// We may get 3 or 4 UUIDs depending on the version of the server, since more recent
+	// versions also return a common UUID for the whole process tree.
+	if n := len(uuids); n < 3 || n > 4 || uuids[1] == "" {
+		panic(fmt.Sprintf("unexpected response from get_recording_ids: got %d UUIDs: %v", n, uuids))
+	}
+
+	// This directory is used to determine where the sessions are stored, unless XDG_DATA_HOME
+	// is set.
+	home_dir, present := os.LookupEnv("HOME")
+	if !present {
+		home_dir = user.HomeDir
+	}
+
+	// This directory stores sessions.
+	xdg_data_dir, present := os.LookupEnv("XDG_DATA_HOME")
+	if !present {
+		xdg_data_dir = filepath.Join(home_dir, ".local", "share")
+	}
+	undo_sessions_dir := filepath.Join(xdg_data_dir, "undo", "sessions")
+
+	err = os.MkdirAll(undo_sessions_dir, 0755)
+	if err != nil {
+		return "", err
+	}
+
+	file := filepath.Join(undo_sessions_dir, string(uuids[1])+".json")
+
+	return file, nil
+}
+
+// Load the UDB session file (if it exists) for the current recording.
+func (uc *undoSession) load(conn *gdbConn) error {
+	path, err := getSessionPath(conn)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+
+	// Clear out the session data.
+	*uc = *newUndoSession()
+
+	uc.sessionState = &session{}
+	err = decoder.Decode(uc.sessionState)
+	if err != nil {
+		return err
+	}
+
+	if uc.sessionState.Version != 0 && uc.sessionState.Version != 1 {
+		return fmt.Errorf("Unknown session version %d in file %s", uc.sessionState.Version, path)
+	}
+
+	// Translate the loaded Undo bookmarks into Delve checkpoints.
+	for name, position := range uc.sessionState.Bookmarks {
+		cpid := uc.checkpointNextId
+		uc.checkpointNextId++
+		uc.checkpoints[cpid] = proc.Checkpoint{
+			ID:    cpid,
+			When:  fmt.Sprintf("%x,%x", position.Bbcount, position.Pc),
+			Where: name,
+		}
+	}
+
+	return err
+}
+
+// Save the session file for the current recording.
+func (uc *undoSession) save(conn *gdbConn) error {
+	// Translate Delve checkpoints into Undo bookmarks.
+	if uc.sessionState == nil {
+		// If we don't already have a session state cached from a previous load then we'll
+		// use a version 0 representation as Delve doesn't generate appropriate state for
+		// the other fields in the version 1 format.
+		//
+		// All new-to-v1 fields are tagged "omitempty" and will not be written out.
+		uc.sessionState = &session{
+			Version: 0,
+		}
+	}
+	uc.sessionState.Bookmarks = make(map[string]bookmarkTime)
+
+	// Local copy of the checkpoints.
+	var checkpoints []proc.Checkpoint
+	for _, cp := range uc.checkpoints {
+		checkpoints = append(checkpoints, cp)
+	}
+	// Sort the checkpoints by descending note length - this is to avoid adding a suffix to a
+	// entries that we've already added a suffix to. e.g. if we've previously saved this session
+	// with a duplicated checkpoint note called "test" then we'll have extended one to
+	// "test-0". If the user adds "test" again, we want to rename that to "test-1" rather than
+	// creating a "test-0-0".
+	sort.Slice(checkpoints, func(i, j int) bool {
+		// This is a "Less" function that sorts in descending order of string length.
+		return len(checkpoints[i].Where) > len(checkpoints[j].Where)
+	})
+
+	// Iterate through sorted checkpoints to eliminate duplicates.
+	for _, cp := range checkpoints {
+		// Ensure that notes are made unique before saving - UDB expects bookmark names to
+		// be unique.
+		base_name := cp.Where
+		name := base_name
+		for i := 0; uc.sessionState.Bookmarks[name] != (bookmarkTime{}); i++ {
+			name = fmt.Sprintf("%s-%d", base_name, i)
+		}
+
+		var time bookmarkTime
+		_, err := fmt.Sscanf(cp.When, "%x,%x", &time.Bbcount, &time.Pc)
+		if err != nil {
+			return err
+		}
+		uc.sessionState.Bookmarks[name] = time
+	}
+
+	path, err := getSessionPath(conn)
+	if err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "    ")
+	err = encoder.Encode(uc.sessionState)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+// Transform a user-specified time into a canonical form. The returned string has been validated
+// (unknown checkpoint IDs, misspelt magic values and incorrectly formatted times will be rejected)
+// and is suitable for passing to travelToTime.
+func (uc *undoSession) resolveUserTime(pos string) (string, error) {
+	// Validate and transform input.
+	//
+	// We will accept:
+	//   start | end - magic values for getting to the extremes of history.
+	//   cN          - a checkpoint name (a "c" character followed by an integer ID)
+	//   BBCOUNT     - an Undo bbcount as a decimal integer (with or without comma-separated
+	//                 grouping of digits).
+	//   BBCOUNT:PC  - an Undo bbcount, as above, followed by a colon and then a program
+	//                 counter value in hex (with leading 0x).
+	if pos == "start" || pos == "end" {
+		// Special case values - valid with no extra checking.
+	} else if len(pos) > 1 && pos[:1] == "c" {
+		// Validate a checkpoint ID.
+		checkpoint, err := uc.lookupCheckpoint(pos)
+		if err != nil {
+			return "", err
+		}
+		pos = checkpoint.When
+	} else if pos != "" {
+		// Validate a potential bbcount or precise time.
+		pos = strings.ReplaceAll(pos, ",", "")
+		var bbcount, pc uint64
+		var err error
+		if strings.Contains(pos, ":") {
+			_, err = fmt.Sscanf(pos, "%d:0x%x\n", &bbcount, &pc)
+		} else if _, err = fmt.Sscanf(pos, "%d\n", &bbcount); err == nil {
+			// It's a valid bbcount.
+			pc = 0
+		}
+
+		if err != nil {
+			return "", errors.New("could not parse time or checkpoint argument to restart.")
+		}
+
+		// A representation of the current time, as used by the udbserver serial protocol.
+		// This matches the format returned by vUDB;get_time and can be used as an argument
+		// to vUDB;goto_time.
+		pos = fmt.Sprintf("%x;%x", bbcount, pc)
+	}
+
+	return pos, nil
+}
+
+// Move the replay process to the a point in time. The "pos" argument should be obtained by calling
+// resolveUserTime to ensure that it is valid.
+func (uc *undoSession) travelToTime(conn *gdbConn, pos string) error {
+	var args []string
+	switch pos {
+	case "start", "":
+		// Find the actual min BB count.
+		minBbCount, _, err := undoGetLogExtent(conn)
+		if err != nil {
+			return err
+		}
+		args = []string{"goto_time", fmt.Sprint(minBbCount), "0"}
+	case "end":
+		args = []string{"goto_record_mode"}
+	default:
+		args = []string{"goto_time", pos}
+	}
+	_, err := undoCmd(conn, args...)
+	return err
+}
+
+// Activate volatile mode.
+// On success, returns a callback that can be used to deactivate volatile mode (and a nil error).
+// The deactivate callback should be used before volatile is next activated, since volatile mode
+// does not support nesting.
+func (uc *undoSession) activateVolatile(conn *gdbConn) (func(), error) {
+	if uc.volatile {
+		panic("tried to activate volatile mode when already active.")
+	}
+	_, err := undoCmd(conn, "set_volatile_mode", "1")
+	if err != nil {
+		return nil, err
+	}
+	uc.volatile = true
+	return func() {
+		uc.volatile = false
+		_, _ = undoCmd(conn, "set_volatile_mode", "0")
+	}, nil
+}
+
+// Callback before Delve begins a continue-type operation.
+// Used to ensure our progress indicators are active and ready to start. Returns an error of nil on
+// success.
+func (uc *undoSession) continuePre(conn *gdbConn) error {
+	if uc.volatile {
+		return nil
+	}
+	// Clear interrupt (and enable progress indication)
+	_, err := undoCmd(conn, "clear_interrupt")
+	return err
+}
+
+// Callback after Delve finishes a continue-type operation.
+// Used to ensure our progress indicators are reset. Returns an error of nil on success.
+func (uc *undoSession) continuePost(conn *gdbConn) error {
+	if uc.volatile {
+		return nil
+	}
+	_, reset_err := undoCmd(conn, "reset_progress_indicator")
+	if reset_err != nil {
+		conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+	}
+	return reset_err
+}
+
+// Callback before Delve starts a restart-type operation.
+// Used to ensure our progress indicators are active and ready to start. Returns an error of nil on
+// success.
+func (uc *undoSession) restartPre(conn *gdbConn) error {
+	if uc.volatile {
+		// We should only be in volatile mode during an inferior call, so this case
+		// should not be possible.
+		panic("attempted to restart in volatile mode.")
+	}
+	// Clear interrupt (and enable progress indication)
+	_, err := undoCmd(conn, "clear_interrupt")
+	return err
+}
+
+// Callback after Delve finishes a restart-type operation.
+// Used to ensure our progress indicators are reset. Returns an error of nil on success.
+func (uc *undoSession) restartPost(conn *gdbConn) error {
+	if uc.volatile {
+		// Restart should not change our volatile mode state.
+		panic("in volatile mode after restart.")
+	}
+	_, reset_err := undoCmd(conn, "reset_progress_indicator")
+	if reset_err != nil {
+		conn.log.Errorf("Error %s from reset_progress_indicator", reset_err)
+	}
+	return reset_err
+}
+
+// Get the UDB server filename for the current architecture.
+func serverFile() (string, error) {
+	switch runtime.GOARCH {
+	case "amd64":
+		return "udbserver_x64", nil
+	case "arm64":
+		return "udbserver_arm64", nil
+	case "386":
+		return "udbserver_x32", nil
+	default:
+		return "", &ErrBackendUnavailable{}
+	}
+}
+
+// Get the full path to the UDB server for the current architecture.
+func serverPath() (string, error) {
+	udb_path, err := exec.LookPath("udb")
+	if err != nil {
+		return "", err
+	}
+
+	udb_path_abs, err := filepath.EvalSymlinks(udb_path)
+	if err != nil {
+		return "", err
+	}
+
+	server_file, err := serverFile()
+	if err != nil {
+		return "", err
+	}
+
+	udb_dir_abs := filepath.Dir(udb_path_abs)
+	cmd_path := filepath.Join(udb_dir_abs, "tools", server_file)
+
+	return cmd_path, nil
+}
+
+func UndoIsAvailable() error {
+	const MinimumVersion = "v8.2.0"
+
+	server, err := serverPath()
+	if err != nil {
+		return err
+	}
+
+	cmds := []string{server, "live-record"}
+
+	for _, cmd := range cmds {
+		if _, err := exec.LookPath(cmd); err != nil {
+			return &ErrBackendUnavailable{
+				Detail: "unable to find an Undo " + MinimumVersion + "+ installation on the current PATH"}
+		}
+	}
+
+	/* Check we're using a sufficiently new version of Undo */
+	versionCmd := exec.Command(server, "--version")
+	var out strings.Builder
+	versionCmd.Stdout = &out
+	err = versionCmd.Run()
+	if err != nil {
+		return &ErrBackendUnavailable{
+			Detail: "unable to check Undo version",
+		}
+	}
+
+	versionRe := regexp.MustCompile("^udbserver ([0-9]+\\.[0-9]+\\.[0-9]+)")
+	matches := versionRe.FindStringSubmatch(out.String())
+	if len(matches) != 2 {
+		return &ErrBackendUnavailable{
+			Detail: "unable to check Undo version from " + out.String(),
+		}
+	}
+
+	/* The semver package requires a leading 'v', so add one */
+	if semver.Compare("v"+matches[1], MinimumVersion) < 0 {
+		return &ErrBackendUnavailable{
+			Detail: "Undo version " + matches[1] + " too old (required " + MinimumVersion + ")",
+		}
+	}
+
+	return nil
+}
+
+func UndoRecord(cmd []string, wd string, quiet bool, stdin string, stdout proc.OutputRedirect, stderr proc.OutputRedirect) (recording string, err error) {
+	if err := UndoIsAvailable(); err != nil {
+		return "", err
+	}
+
+	file, err := ioutil.TempFile("/tmp", "undo")
+	if err != nil {
+		return "", err
+	}
+
+	recording = file.Name()
+	args := make([]string, 0)
+	args = append(args, "-o", recording)
+	args = append(args, cmd...)
+	lrcmd := exec.Command("live-record", args...)
+	var closefn func()
+	// FIXME: pass quiet to openRedirects(), not false.
+	lrcmd.Stdin, lrcmd.Stdout, lrcmd.Stderr, closefn, err = openRedirects(stdin, stdout, stderr, false)
+	if err != nil {
+		return "", err
+	}
+	if wd != "" {
+		lrcmd.Dir = wd
+	}
+	lrcmd.Env = os.Environ()
+
+	// Ignore failures from Run - it could be the target failing
+	_ = lrcmd.Run()
+	closefn()
+
+	if isRecording, err := UndoIsRecording(recording); !isRecording {
+		// Recording apparently failed to put anything in the file
+		os.Remove(recording)
+		if err == nil {
+			err = fmt.Errorf("recording failed")
+		}
+		return "", err
+	}
+
+	return recording, err
+}
+
+func UndoReplay(recording string, exePath string, quiet bool, debugInfoDirs []string, cmdline string) (tgt *proc.TargetGroup, err error) {
+	if err := UndoIsAvailable(); err != nil {
+		return nil, err
+	}
+
+	if isRecording, err := UndoIsRecording(recording); !isRecording || err != nil {
+		if err == nil {
+			err = fmt.Errorf("%s is not an Undo recording", recording)
+		}
+		return nil, err
+	}
+
+	port := unusedPort()
+
+	args := make([]string, 0)
+	args = append(args, "--load-file", recording, "--connect-port", port[1:])
+	server, err := serverPath()
+	if err != nil {
+		return nil, err
+	}
+	servercmd := exec.Command(server, args...)
+
+	if !quiet {
+		servercmd.Env = os.Environ()
+		// servercmd.Env = append(servercmd.Env, "UNDO_debug_filename=/dev/stderr")
+		// servercmd.Env = append(servercmd.Env, "UNDO_debug_level=1")
+		servercmd.Stdout = os.Stdout
+		servercmd.Stderr = os.Stderr
+	}
+
+	if err := servercmd.Start(); err != nil {
+		return nil, err
+	}
+
+	p := newProcess(servercmd.Process)
+
+	// Create storage for Undo-related state.
+	//
+	// This being non-nil indicates the use of an Undo backend, which selects alternative
+	// implementations for various functions and handles certain events (such as
+	// gdbserial stop packets) differently.
+	p.conn.undoSession = newUndoSession()
+
+	p.tracedir = recording
+	tgt, err = p.Dial(port, exePath, cmdline, 0, debugInfoDirs, proc.StopAttached)
+	if err != nil {
+		servercmd.Process.Kill()
+		return nil, err
+	}
+
+	// Load the session details if possible (discarding errors, which are non-fatal).
+	_ = p.conn.undoSession.load(&p.conn)
+
+	return tgt, nil
+}
+
+// RecordAndReplay acts like calling Record and then Replay.
+func UndoRecordAndReplay(cmd []string, wd string, quiet bool, debugInfoDirs []string, stdin string, stdout proc.OutputRedirect, stderr proc.OutputRedirect) (tgt *proc.TargetGroup, recording string, err error) {
+	recording, err = UndoRecord(cmd, wd, quiet, stdin, stdout, stderr)
+	if err != nil || recording == "" {
+		return nil, "", err
+	}
+	tgt, err = UndoReplay(recording, "", quiet, debugInfoDirs, strings.Join(cmd, " "))
+	return tgt, recording, err
+}
+
+func UndoIsRecording(recordingFile string) (result bool, err error) {
+	marker := []byte("HD\x10\x00\x00\x00UndoDB recording")
+
+	f, err := os.Open(recordingFile)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	data := make([]byte, len(marker))
+	c, err := f.Read(data)
+	if err != nil || c != len(marker) {
+		return false, err
+	}
+
+	return bytes.Equal(marker, data), nil
+}
+
+// Fetch the local path to the main executable in a recording.
+//
+// This should always be present in a recording and can then be queried for symbol information, etc.
+func undoGetExePath(conn *gdbConn) (string, error) {
+	path, err := undoCmd(conn, "get_load_exe_original")
+	if err != nil {
+		return "", err
+	}
+	path, ok := decodeHexString([]byte(path))
+	if !ok {
+		return "", errors.New("failed to decode load exe")
+	}
+
+	tmpdir, err := undoCmd(conn, "get_tmpdir")
+	if err != nil {
+		return "", err
+	}
+	tmpdir, ok = decodeHexString([]byte(tmpdir))
+	if !ok {
+		return "", errors.New("failed to decode tmpdir")
+	}
+
+	return filepath.Join(tmpdir, "symbol-files", path), nil
+}
+
+// Fetch the output of a udbserver get_info command, split on ; and , characters.
+//
+// This is not (currently) implementing a proper parse of the data returned, just making it more
+// convenient to search.
+func undoGetInfo(conn *gdbConn) ([]string, error) {
+	info, err := undoCmd(conn, "get_info")
+	if err != nil {
+		return nil, err
+	}
+	splitter := func(c rune) bool {
+		return c == ';' || c == ','
+	}
+	return strings.FieldsFunc(info, splitter), nil
+}
+
+// Fetch the mininum and maximum bbcounts of recorded history.
+func undoGetLogExtent(conn *gdbConn) (uint64, uint64, error) {
+	extent, err := undoCmd(conn, "get_log_extent")
+	if err != nil {
+		return 0, 0, err
+	}
+	bbcounts := strings.Split(extent, ",")
+	bbcount_min, err := strconv.ParseUint(bbcounts[0], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	bbcount_max, err := strconv.ParseUint(bbcounts[1], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	return bbcount_min, bbcount_max, nil
+}
+
+// Fetch whether the replay session is currently at the start of recorded history.
+func undoInfoAtStart(info_fields []string) bool {
+	for _, value := range info_fields {
+		if value == "at_event_log_start" {
+			return true
+		}
+	}
+	return false
+}
+
+// Fetch whether the replay session is currently at the end of recorded history.
+func undoInfoAtEnd(info_fields []string) bool {
+	for _, value := range info_fields {
+		if value == "has_exited" || value == "just_exited" || value == "at_event_log_end" {
+			return true
+		}
+	}
+	return false
+}
+
+// Transform a stopPacket if necessary to represent the state of the replay session.
+//
+// Usually the packet will be passed through unaltered. Currently the only transformation
+// implemented is modify a packet at the end of replay history to look like a SIGKILL, to be
+// consistent with how RR would report this condition.
+func undoHandleStopPacket(conn *gdbConn, sp stopPacket) (stopPacket, error) {
+	// TODO: find a different way of indicating end of history as opposed to actual process
+	// exit.
+	//
+	// TODO: find a different way of indicating the start of history (currently registers as a
+	// "hardcoded breakpoint") - should we use the atstart flag that rr uses somehow?.
+
+	info_fields, err := undoGetInfo(conn)
+	if err != nil {
+		return stopPacket{}, err
+	}
+
+	at_end := undoInfoAtEnd(info_fields)
+	if at_end {
+		// Mirror the behaviour of rr, in which the server will send a fake SIGKILL
+		// at the end of history.
+		sp.sig = _SIGKILL
+		return sp, nil
+	}
+
+	at_start := undoInfoAtStart(info_fields)
+	if at_start {
+		// Mirror the behaviour of rr, in which the server will send a fake Signal 0 when it
+		// reaches the start of the process history.
+		sp.sig = 0
+		return sp, nil
+	}
+
+	return sp, nil
+}
+
+// Fetch the exit code of the replay process (or zero, if not applicable) from the recording.
+func undoGetExitCode(conn *gdbConn) (int, error) {
+	exit_code := 0
+	info_fields, err := undoGetInfo(conn)
+	if err != nil {
+		return 0, err
+	}
+
+	for idx, value := range info_fields {
+		// Support older and newer serial protocol behaviour.
+		if value != "just_exited" && value != "has_exited" {
+			continue
+		}
+
+		// Exit status, encoded as hex, follows the has_exited string.
+		exit_status, err := strconv.ParseInt(info_fields[idx+1], 16, 16)
+		if err != nil {
+			return 0, err
+		}
+
+		// Convert exit status into the form Delve usually reports - positive integer for a
+		// normal exit, negative signal number if terminated by a signal.
+		wait_status := syscall.WaitStatus(exit_status)
+		if wait_status.Signaled() {
+			exit_signal := wait_status.Signal()
+			exit_code = -int(exit_signal)
+		} else {
+			exit_code = wait_status.ExitStatus()
+		}
+		break
+	}
+
+	return exit_code, nil
+}
+
+// Print a bbcount and PC pair in standard Undo time notiation.
+func undoTimeString(bbcount uint64, pc uint64) string {
+	var bbcount_groups []string
+
+	// Chop 3 digits at a time from the low-order end of the bbcount string.
+	var bbcount_rem uint64
+	for bbcount_rem = bbcount; bbcount_rem > 1000; bbcount_rem = bbcount_rem / 1000 {
+		// Format the group with leading zeros.
+		group := fmt.Sprintf("%03d", bbcount_rem%1000)
+		bbcount_groups = append([]string{group}, bbcount_groups...)
+	}
+	// Finally, add the highest-order group, which has no leading zeros.
+	bbcount_groups = append([]string{fmt.Sprintf("%d", bbcount_rem)}, bbcount_groups...)
+
+	// Return the comma-separated whole.
+	return fmt.Sprintf("%s:0x%x", strings.Join(bbcount_groups, ","), pc)
+}
+
+// Parse the udbserver serial-level representation of a time into bbcount and PC.
+func undoParseServerTime(resp string) (uint64, uint64, error) {
+	// We have received a comma-separated list of hex numbers.
+	time_parts := strings.Split(resp, ",")
+
+	// First component is bbcount.
+	bbcount, err := strconv.ParseUint(time_parts[0], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// Second component is PC.
+	pc, err := strconv.ParseUint(time_parts[1], 16, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return bbcount, pc, nil
+}
+
+// Fetch a representation of the current time as a string.
+func undoWhen(conn *gdbConn) (string, error) {
+	resp, err := undoCmd(conn, "get_time")
+	if err != nil {
+		return "", err
+	}
+
+	bbcount, pc, err := undoParseServerTime(resp)
+	if err != nil {
+		return "", err
+	}
+
+	// Calculate our percentage through available history.
+	bbcount_min, bbcount_max, err := undoGetLogExtent(conn)
+	if err != nil {
+		return "", err
+	}
+
+	history_perc := uint64(100)
+	if bbcount_min != bbcount_max {
+		history_perc = ((bbcount - bbcount_min) * 100) / (bbcount_max - bbcount_min)
+	}
+
+	history_perc_fmt := fmt.Sprintf("%d%%", history_perc)
+	result := fmt.Sprintf("[replaying %s %s]", history_perc_fmt, undoTimeString(bbcount, pc))
+	return result, nil
+}

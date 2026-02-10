@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/service/api"
 )
 
 // Launch debug sessions support the following modes:

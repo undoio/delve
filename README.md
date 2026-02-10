@@ -1,8 +1,7 @@
 ![Delve](https://raw.githubusercontent.com/go-delve/delve/master/assets/delve_horizontal.png)
 
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/go-delve/delve/master/LICENSE)
-[![Go Reference](https://pkg.go.dev/badge/github.com/go-delve/delve.svg)](https://pkg.go.dev/github.com/go-delve/delve)
-[![Build Status](https://delve.teamcity.com/app/rest/builds/buildType:(id:Delve_AggregatorBuild)/statusIcon.svg)](https://delve.teamcity.com/viewType.html?buildTypeId=Delve_AggregatorBuild&guest=1)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/undoio/delve/master/LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-delve/delve.svg)](https://pkg.go.dev/github.com/undoio/delve)
 
 The GitHub issue tracker is for **bugs** only. Please use the [developer mailing list](https://groups.google.com/forum/#!forum/delve-dev) for any feature proposals and discussions.
 
