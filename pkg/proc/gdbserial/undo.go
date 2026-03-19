@@ -182,6 +182,7 @@ type session struct {
 	Sysroot               interface{}             `json:"sysroot,omitempty"`
 	ConvenienceVariables  interface{}             `json:"convenience_variables,omitempty"`
 	TelemetryId           interface{}             `json:"telemetry_id,omitempty"`
+	Language              interface{}             `json:"language,omitempty"`
 }
 
 // Get the path to the UDB session file for the current recording.
