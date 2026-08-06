@@ -733,12 +733,23 @@ func undoGetLogExtent(conn *gdbConn) (uint64, uint64, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+
 	bbcounts := strings.Split(extent, ",")
+
+	var max_bbcount_idx int
+	if len(bbcounts) == 2 {
+		max_bbcount_idx = 1
+	} else if len(bbcounts) == 4 {
+		max_bbcount_idx = 2
+	} else {
+		return 0, 0, errors.New("unexpected return length from get_log_extent.")
+	}
+
 	bbcount_min, err := strconv.ParseUint(bbcounts[0], 16, 64)
 	if err != nil {
 		return 0, 0, err
 	}
-	bbcount_max, err := strconv.ParseUint(bbcounts[1], 16, 64)
+	bbcount_max, err := strconv.ParseUint(bbcounts[max_bbcount_idx], 16, 64)
 	if err != nil {
 		return 0, 0, err
 	}
