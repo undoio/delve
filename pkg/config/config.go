@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"slices"
 
-	"github.com/go-delve/delve/service/api"
+	"github.com/undoio/delve/service/api"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -151,7 +151,7 @@ See also Documentation/cli/substitutepath.md for how the rules are applied.
 	"max-string-len":            "Maximum string length used when printing variables.\n",
 	"max-array-values":          "Maximum number of array values when printing variables.\n",
 	"max-variable-recurse":      "Maximum number of nested struct members when printing variables.\n",
-	"show-raw-strings":         "If true, print string values as-is with %s (no quoting or escaping) rather than with Go's %q.\n",
+	"show-raw-strings":          "If true, print string values as-is with %s (no quoting or escaping) rather than with Go's %q.\n",
 	"disassemble-flavor":        "Disassembler syntax. Can be 'intel', 'gun' or 'go'.\n",
 	"show-location-expr":        "If true the 'whatis' command will print the DWARF location expression of its argument.\n",
 	"source-list-line-color":    "Source list line-number color, as a terminal escape sequence.\n",

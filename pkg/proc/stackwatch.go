@@ -3,8 +3,8 @@ package proc
 import (
 	"errors"
 
-	"github.com/go-delve/delve/pkg/astutil"
-	"github.com/go-delve/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/astutil"
+	"github.com/undoio/delve/pkg/logflags"
 )
 
 // This file implements most of the details needed to support stack

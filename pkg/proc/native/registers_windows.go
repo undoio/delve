@@ -1,6 +1,6 @@
 package native
 
-import "github.com/go-delve/delve/pkg/dwarf/op"
+import "github.com/undoio/delve/pkg/dwarf/op"
 
 // SetPC sets the RIP register to the value specified by `pc`.
 func (thread *nativeThread) setPC(pc uint64) error {

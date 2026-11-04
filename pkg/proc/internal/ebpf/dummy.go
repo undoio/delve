@@ -8,6 +8,6 @@
 package ebpf
 
 import (
-	_ "github.com/go-delve/delve/pkg/proc/internal/ebpf/bpf"
-	_ "github.com/go-delve/delve/pkg/proc/internal/ebpf/bpf/include"
+	_ "github.com/undoio/delve/pkg/proc/internal/ebpf/bpf"
+	_ "github.com/undoio/delve/pkg/proc/internal/ebpf/bpf/include"
 )
