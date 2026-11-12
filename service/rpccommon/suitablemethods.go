@@ -3,7 +3,7 @@
 package rpccommon
 
 import (
-	"github.com/go-delve/delve/service/rpc2"
+	"github.com/undoio/delve/service/rpc2"
 	"reflect"
 )
 

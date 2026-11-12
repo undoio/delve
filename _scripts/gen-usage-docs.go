@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-delve/delve/cmd/dlv/cmds"
-	"github.com/go-delve/delve/cmd/dlv/cmds/helphelpers"
 	"github.com/spf13/cobra/doc"
+	"github.com/undoio/delve/cmd/dlv/cmds"
+	"github.com/undoio/delve/cmd/dlv/cmds/helphelpers"
 )
 
 const defaultUsageDir = "./Documentation/usage"

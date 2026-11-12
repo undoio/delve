@@ -19,7 +19,7 @@ func TestShortenType(t *testing.T) {
 		{"map[uint64]*github.com/aarzilli/dwarf5/dwarf.typeUnit", "map[uint64]*dwarf.typeUnit"},
 		{"uint8", "uint8"},
 		{"encoding/binary", "encoding/binary"},
-		{"*github.com/go-delve/delve/pkg/proc.Target", "*proc.Target"},
+		{"*github.com/undoio/delve/pkg/proc.Target", "*proc.Target"},
 		{"long/package/path/pkg.Parametric[long/package/path/pkg.A, map[long/package/path/pkg.B]long/package/path/pkg.A]", "pkg.Parametric[pkg.A, map[pkg.B]pkg.A]"},
 		{"[]long/package/path/pkg.Parametric[long/package/path/pkg.A]", "[]pkg.Parametric[pkg.A]"},
 		{"[24]long/package/path/pkg.A", "[24]pkg.A"},

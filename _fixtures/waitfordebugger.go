@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/go-delve/delve/pkg/debugdetect"
+	"github.com/undoio/delve/pkg/debugdetect"
 )
 
 func main() {

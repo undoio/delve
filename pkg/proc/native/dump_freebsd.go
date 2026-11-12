@@ -4,8 +4,8 @@ import (
 	"errors"
 	"unsafe"
 
-	"github.com/go-delve/delve/pkg/elfwriter"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/elfwriter"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 /*
