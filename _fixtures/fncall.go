@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/go-delve/delve/_fixtures/internal/issue4179helper"
+	"github.com/undoio/delve/_fixtures/internal/issue4179helper"
 )
 
 var call = "this is a variable named `call`"

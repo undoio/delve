@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/go-delve/delve/pkg/proc"
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	"github.com/undoio/delve/pkg/proc"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 func TestGoroutineCreationLocation(t *testing.T) {

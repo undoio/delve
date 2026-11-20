@@ -1,6 +1,6 @@
 package native
 
-import "github.com/go-delve/delve/pkg/proc/winutil"
+import "github.com/undoio/delve/pkg/proc/winutil"
 
 const (
 	_CONTEXT_ARM64               = 0x00400000

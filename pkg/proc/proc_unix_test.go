@@ -13,9 +13,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/go-delve/delve/pkg/proc"
-	"github.com/go-delve/delve/pkg/proc/native"
-	protest "github.com/go-delve/delve/pkg/proc/test"
+	"github.com/undoio/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc/native"
+	protest "github.com/undoio/delve/pkg/proc/test"
 )
 
 type errIssue419 struct {
@@ -28,7 +28,7 @@ func (npe errIssue419) Error() string {
 }
 
 func TestIssue419(t *testing.T) {
-	if testBackend == "rr" {
+	if testBackend == "rr" || testBackend == "undo" {
 		return
 	}
 

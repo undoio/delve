@@ -2,7 +2,7 @@ package native
 
 import (
 	"fmt"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/proc"
 )
 
 func (t *nativeThread) restoreRegisters(savedRegs proc.Registers) error {

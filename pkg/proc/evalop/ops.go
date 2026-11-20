@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/constant"
 
-	"github.com/go-delve/delve/pkg/dwarf/godwarf"
+	"github.com/undoio/delve/pkg/dwarf/godwarf"
 )
 
 // Op is a stack machine opcode

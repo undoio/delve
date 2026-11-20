@@ -34,17 +34,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-delve/delve/pkg/gobuild"
-	"github.com/go-delve/delve/pkg/goversion"
-	"github.com/go-delve/delve/pkg/locspec"
-	"github.com/go-delve/delve/pkg/logflags"
-	"github.com/go-delve/delve/pkg/proc"
+	"github.com/undoio/delve/pkg/gobuild"
+	"github.com/undoio/delve/pkg/goversion"
+	"github.com/undoio/delve/pkg/locspec"
+	"github.com/undoio/delve/pkg/logflags"
+	"github.com/undoio/delve/pkg/proc"
 
-	"github.com/go-delve/delve/service"
-	"github.com/go-delve/delve/service/api"
-	"github.com/go-delve/delve/service/debugger"
-	"github.com/go-delve/delve/service/internal/sameuser"
 	"github.com/google/go-dap"
+	"github.com/undoio/delve/service"
+	"github.com/undoio/delve/service/api"
+	"github.com/undoio/delve/service/debugger"
+	"github.com/undoio/delve/service/internal/sameuser"
 )
 
 // Server implements a DAP server that can accept a single client for
@@ -649,8 +649,20 @@ func (s *Session) ServeDAPCodec() {
 		}
 	}()
 	reader := bufio.NewReader(s.conn)
+
+	// This codec supports Undo's DAP extensions as well as standard DAP messages.
+	codec := makeUndoDapCodec()
 	for {
-		request, err := dap.ReadProtocolMessage(reader)
+		message, err := dap.ReadBaseMessage(reader)
+		s.config.log.Debug("Read base message: ", message, err)
+		// err will be handled by the common block below, if non-nil.
+
+		var request dap.Message
+		if err == nil {
+			request, err = codec.DecodeMessage(message)
+			s.config.log.Debug("Decoded message: ", request, err)
+		}
+
 		// Handle dap.DecodeProtocolMessageFieldError errors gracefully by responding with an ErrorResponse.
 		// For example:
 		// -- "Request command 'foo' is not supported" means we
@@ -854,10 +866,46 @@ func (s *Session) handleRequest(request dap.Message) {
 			s.onStepOutRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
-	case *dap.StepBackRequest: // Optional (capability 'supportsStepBack')
+	case *dap.StepBackRequest: // Optional (capability 'supportsStepBack' or Undo backend)
 		go func() {
 			defer s.recoverPanic(request)
 			s.onStepBackRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *StepOverBackRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onStepOverBackRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *StepOutBackRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onStepOutBackRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *GotoStartRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoStartRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *GotoEndRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoEndRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *GotoCheckpointRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onGotoCheckpointRequest(request, resumeRequestLoop)
+		}()
+		resumeRequestLoop.wait()
+	case *LastValueRequest: // Custom (Undo backend)
+		go func() {
+			defer s.recoverPanic(request)
+			s.onLastValueRequest(request, resumeRequestLoop)
 		}()
 		resumeRequestLoop.wait()
 	case *dap.ReverseContinueRequest: // Optional (capability 'supportsStepBack')
@@ -899,6 +947,12 @@ func (s *Session) handleRequest(request dap.Message) {
 		s.onDataBreakpointInfoRequest(request)
 	case *dap.SetDataBreakpointsRequest: // Optional (capability 'supportsDataBreakpoints')
 		s.onSetDataBreakpointRequest(request)
+	case *CreateCheckpointRequest: // Custom (Undo backend)
+		s.onCreateCheckpointRequest(request)
+	case *DeleteCheckpointRequest: // Custom (Undo backend)
+		s.onDeleteCheckpointRequest(request)
+	case *ListCheckpointsRequest: // Custom (Undo backend)
+		s.onListCheckpointsRequest(request)
 	//--- Requests that we may want to support ---
 	case *dap.SourceRequest: // Required
 		/*TODO*/ s.sendUnsupportedErrorResponse(request.Request) // https://github.com/go-delve/delve/issues/2851
@@ -1109,9 +1163,13 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 			return
 		}
 
-		// Assign the rr trace directory path to debugger configuration
+		// Assign the rr trace directory or Undo recording path to debugger configuration
 		s.config.Debugger.CoreFile = args.TraceDirPath
-		args.Backend = "rr"
+
+		// Respect a valid replay backend if explicitly configured, otherwise default to rr.
+		if args.Backend != "rr" && args.Backend != "undo" {
+			args.Backend = "rr"
+		}
 	}
 	if args.Mode == "core" {
 		// Validate core dump path
@@ -1370,6 +1428,8 @@ func (s *Session) onLaunchRequest(request *dap.LaunchRequest) {
 	}
 	// Enable StepBack controls on supported backends
 	if s.config.Debugger.Backend == "rr" {
+		// We don't enable the StepBack capability for the Undo backend as we use custom DAP
+		// extensions to get the job done.
 		s.send(&dap.CapabilitiesEvent{Event: *s.newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 	}
 
@@ -2396,6 +2456,8 @@ func (s *Session) onAttachRequest(request *dap.AttachRequest) {
 		}
 		// Enable StepBack controls on supported backends
 		if s.config.Debugger.Backend == "rr" {
+			// We don't enable the StepBack capability for the Undo backend as we use custom DAP
+			// extensions to get the job done.
 			s.send(&dap.CapabilitiesEvent{Event: *s.newEvent("capabilities"), Body: dap.CapabilitiesEventBody{Capabilities: dap.Capabilities{SupportsStepBack: true}}})
 		}
 		// Customize termination options for debugger and debuggee
@@ -3133,7 +3195,7 @@ func (s *Session) convertVariableWithOpts(v *proc.Variable, qualifiedNameOrExpr 
 	reloadVariable := func(v *proc.Variable, qualifiedNameOrExpr string) (value string) {
 		// We might be loading variables from the frame that's not topmost, so use
 		// frame-independent address-based expression, not fully-qualified name as per
-		// https://github.com/go-delve/delve/blob/master/Documentation/api/ClientHowto.md#looking-into-variables.
+		// https://github.com/undoio/delve/blob/master/Documentation/api/ClientHowto.md#looking-into-variables.
 		// TODO(polina): Get *proc.Variable object from debugger instead. Export a function to set v.loaded to false
 		// and call v.loadValue gain with a different load config. It's more efficient, and it's guaranteed to keep
 		// working with generics.
@@ -3568,10 +3630,250 @@ func (s *Session) onRestartRequest(request *dap.RestartRequest) {
 }
 
 // onStepBackRequest handles 'stepBack' request.
-// This is an optional request enabled by capability 'supportsStepBackRequest'.
+// This is an optional request enabled by capability 'supportsStepBackRequest' or by the presence of an Undo backend.
 func (s *Session) onStepBackRequest(request *dap.StepBackRequest, allowNextStateChange *syncflag) {
 	s.sendStepResponse(request.Arguments.ThreadId, &dap.StepBackResponse{Response: *s.newResponse(request.Request)})
+	s.stepUntilStopAndNotify(api.ReverseStep, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// onStepOverBackRequest handles the 'undo/stepOverBack' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onStepOverBackRequest(request *StepOverBackRequest, allowNextStateChange *syncflag) {
+	s.sendStepResponse(request.Arguments.ThreadId, &StepOverBackResponse{Response: *s.newResponse(request.Request)})
 	s.stepUntilStopAndNotify(api.ReverseNext, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// onStepOutBackRequest handles the 'undo/stepOutBack' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onStepOutBackRequest(request *StepOutBackRequest, allowNextStateChange *syncflag) {
+	s.sendStepResponse(request.Arguments.ThreadId, &StepOutBackResponse{Response: *s.newResponse(request.Request)})
+	s.stepUntilStopAndNotify(api.ReverseStepOut, request.Arguments.ThreadId, request.Arguments.Granularity, allowNextStateChange)
+}
+
+// doGoto handles the machinery of the 'undo/gotoStart', 'undo/gotoEnd' and 'undo/gotoCheckpoint' requests.
+// These are custom requests supported by Undo's Delve fork.
+func (s *Session) doGoto(request dap.Request, response dap.Message, dest string, allowNextStateChange *syncflag) {
+	defer allowNextStateChange.raise()
+
+	// We tell the client that the debuggee has been "continued" so it will expect a stop event.
+	s.send(&dap.ContinuedEvent{
+		Event: *s.newEvent("continued"),
+		Body: dap.ContinuedEventBody{
+			ThreadId:            1,
+			AllThreadsContinued: true,
+		},
+	})
+	// Respond to the request.
+	s.send(response)
+
+	// Do the time travel - this call is synchronous but can take some time depending on when
+	// the destination is and what snapshots are available.
+	_, err := s.debugger.Restart(false, dest, false, nil, [3]string{}, false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	// Refresh our view of debugger state so we can update the client.
+	state, err := s.debugger.State(false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	// We attempt to roughly match behaviour the behaviour of stopping after a step / continue
+	// here, since there's no stop reason for an explicit time jump.
+	s.resetHandlesForStoppedEvent()
+	stopped := dap.StoppedEvent{
+		Event: *s.newEvent("stopped"),
+		Body: dap.StoppedEventBody{
+			Reason:            "step",
+			ThreadId:          int(stoppedGoroutineID(state)),
+			AllThreadsStopped: true,
+		},
+	}
+	s.send(&stopped)
+}
+
+// onGotoStartRequest handles the 'undo/gotoStart' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoStartRequest(request *GotoStartRequest, allowNextStateChange *syncflag) {
+	s.doGoto(request.Request, &GotoStartResponse{Response: *s.newResponse(request.Request)}, "start", allowNextStateChange)
+}
+
+// onGotoEndRequest handles the 'undo/gotoEnd' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoEndRequest(request *GotoEndRequest, allowNextStateChange *syncflag) {
+	s.doGoto(request.Request, &GotoEndResponse{Response: *s.newResponse(request.Request)}, "end", allowNextStateChange)
+}
+
+// onGotoCheckpointRequest handles the 'undo/gotoCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onGotoCheckpointRequest(request *GotoCheckpointRequest, allowNextStateChange *syncflag) {
+	dest := fmt.Sprintf("c%d", request.Arguments.CheckpointId)
+	s.doGoto(request.Request, &GotoCheckpointResponse{Response: *s.newResponse(request.Request)}, dest, allowNextStateChange)
+}
+
+// onCreateCheckpointRequest handles the 'undo/createCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onCreateCheckpointRequest(request *CreateCheckpointRequest) {
+	id, err := s.debugger.Checkpoint(request.Arguments.Label)
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	s.send(&CreateCheckpointResponse{
+		Response: *s.newResponse(request.Request),
+		Body:     CreateCheckpointResponseBody{Id: id},
+	})
+}
+
+// onDeleteCheckpointRequest handles the 'undo/deleteCheckpoint' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onDeleteCheckpointRequest(request *DeleteCheckpointRequest) {
+	err := s.debugger.ClearCheckpoint(request.Arguments.CheckpointId)
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	s.send(&DeleteCheckpointResponse{Response: *s.newResponse(request.Request)})
+}
+
+// onListCheckpointsRequest handles the 'undo/listCheckpoints' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onListCheckpointsRequest(request *ListCheckpointsRequest) {
+	checkpoints, err := s.debugger.Checkpoints()
+
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	response_checkpoints := make([]Checkpoint, 0, len(checkpoints))
+	for _, cp := range checkpoints {
+		response_checkpoints = append(response_checkpoints, Checkpoint{
+			Id:    cp.ID,
+			Label: cp.Where,
+			Time:  cp.When,
+		})
+	}
+
+	s.send(&ListCheckpointsResponse{
+		Response: *s.newResponse(request.Request),
+		Body:     ListCheckpointsBody{Checkpoints: response_checkpoints},
+	})
+}
+
+func (s *Session) rewindWithWatchpoint(thread int64, frame int, expression string, allowNextStateChange *syncflag) (*api.DebuggerState, bool, error) {
+	wp, err := s.debugger.CreateWatchpoint(thread, frame, 0, expression, api.WatchWrite)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// We tell the client that the debuggee has been "continued" so it will expect a stop event.
+	s.send(&dap.ContinuedEvent{
+		Event: *s.newEvent("continued"),
+		Body: dap.ContinuedEventBody{
+			ThreadId:            int(thread),
+			AllThreadsContinued: true,
+		},
+	})
+
+	// Attempt to rewind.
+	state, err := s.runUntilStop(api.Rewind, allowNextStateChange)
+
+	// Clear up our watchpoint - we definitely don't need it anymore.
+	_, wp_err := s.debugger.ClearBreakpoint(wp)
+
+	err = errors.Join(err, wp_err)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return state, s.debugger.StopReason() == proc.StopWatchpoint, nil
+}
+
+// onLastValueRequest handles the 'undo/lastValue' request.
+// This is a custom request supported by Undo's Delve fork.
+func (s *Session) onLastValueRequest(request *LastValueRequest, allowNextStateChange *syncflag) {
+	defer allowNextStateChange.raise()
+
+	breakpoints := s.debugger.Breakpoints(true)
+	defer func() {
+		// On exit, restore the original status of all breakpoints.
+		for _, bp := range breakpoints {
+			s.debugger.AmendBreakpoint(bp)
+		}
+	}()
+
+	sf, ok := s.stackFrameHandles.get(request.Arguments.FrameId)
+	// Todo: Does sf.goroutineID mean we don't need the ThreadID argument?
+	if !ok {
+		s.sendErrorResponse(
+			request.Request,
+			UnableToSetBreakpoints,
+			"Unable to set watchpoint",
+			fmt.Sprintf("unknown frame id %d", request.Arguments.FrameId),
+		)
+		return
+	}
+
+	// Disable all breakpoints to avoid confusion with the watchpoint we'll create.
+	for _, bp := range breakpoints {
+		bp_disabled := *bp
+		bp_disabled.Disabled = true
+		s.debugger.AmendBreakpoint(&bp_disabled)
+	}
+
+	state_before, err := s.debugger.State(false)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+	}
+
+	state, found, err := s.rewindWithWatchpoint(
+		int64(request.Arguments.ThreadId),
+		sf.frameIndex,
+		request.Arguments.Expression,
+		allowNextStateChange,
+	)
+	if err != nil {
+		s.sendInternalErrorResponse(request.Seq, err.Error())
+		return
+	}
+
+	// If we didn't find a value change then return to the initial point in time.
+	// Todo:
+	//  - probably need to restore current thread, frame, etc also.
+	//  - if we were already at the start of time a strange error comes out - investigate!
+	if !found {
+		_, err := s.debugger.Restart(false, state_before.When, false, nil, [3]string{}, false)
+		if err != nil {
+			s.sendInternalErrorResponse(request.Seq, err.Error())
+		}
+	}
+
+	s.send(&LastValueResponse{
+		Response: *s.newResponse(request.Request),
+		Body: LastValueResult{Found: found},
+	})
+
+	// We attempt to roughly match behaviour the behaviour of stopping after a step / continue
+	// here, since there's no stop reason for an explicit time jump.
+	s.resetHandlesForStoppedEvent()
+	stopped := dap.StoppedEvent{
+		Event: *s.newEvent("stopped"),
+		Body: dap.StoppedEventBody{
+			ThreadId:          int(stoppedGoroutineID(state)),
+			AllThreadsStopped: true,
+		},
+	}
+
+	if found {
+		stopped.Body.Reason = "data breakpoint"
+	} else {
+		stopped.Body.Reason = "step"
+	}
+
+	s.send(&stopped)
 }
 
 // onReverseContinueRequest performs a rewind command call up to the previous
